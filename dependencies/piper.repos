@@ -1,0 +1,5 @@
+repositories:
+  piper_ros:
+    type: git
+    url: https://github.com/binb1nwu/piper_ros.git
+    version: 13c684068bbef4e68cb8f01ccfdc3b851ddf0ed8

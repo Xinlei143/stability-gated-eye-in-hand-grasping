@@ -1,0 +1,58 @@
+# ROS/colcon generated files
+workspaces/*_ws/build/
+workspaces/*_ws/install/
+workspaces/*_ws/log/
+
+# Third-party source is recreated from dependencies/*.repos
+workspaces/orbbec_ws/src/*
+workspaces/piper_ws/src/*
+workspaces/moveit_ws/src/*
+workspaces/piper_ws/_upstream/
+!workspaces/orbbec_ws/src/.gitkeep
+!workspaces/piper_ws/src/.gitkeep
+!workspaces/moveit_ws/src/.gitkeep
+
+# Machine-specific Python environment and runtime artifacts
+venvs/
+runtime/models/*.pth
+runtime/models/*.pt
+runtime/models/*.onnx
+runtime/models/*.engine
+runtime/calibration/*.json
+runtime/logs/*
+runtime/manifest.txt
+
+# Generated GitHub Release assets
+dist/
+
+# Datasets and generated training results
+data/*
+!data/README.md
+
+# Rosbags, deployment archives and other generated binary artifacts
+*.db3
+*.mcap
+*.bag
+*.tar
+*.tar.gz
+*.zip
+
+# Credentials and local overrides must never be published
+.env
+.env.*
+*.pem
+*.key
+*.token
+config/project.local.env
+config/project.env
+
+# Machine inventory is included in private transfer bundles, not public Git
+dependencies/python-system.freeze.txt
+dependencies/ubuntu-packages.txt
+dependencies/nvidia-smi.txt
+
+__pycache__/
+*.py[cod]
+.DS_Store
+._*
+Log/

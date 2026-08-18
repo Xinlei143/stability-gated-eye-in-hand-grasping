@@ -1,0 +1,42 @@
+foam_segmentation:
+  ros__parameters:
+    require_cuda: true
+    input_width: 640
+    input_height: 360
+
+foam_camera_to_base:
+  ros__parameters:
+    base_frame: base_link
+    end_pose_timeout: 1.0
+
+foam_target_latch:
+  ros__parameters:
+    base_frame: base_link
+    sample_window: 1.5
+    minimum_samples: 15
+    maximum_spread: 0.010
+    workspace_x_min: 0.15
+    workspace_x_max: 0.60
+    workspace_y_abs_max: 0.35
+    workspace_z_min: -0.02
+    workspace_z_max: 0.20
+
+foam_grasp_pose_preview:
+  ros__parameters:
+    base_frame: base_link
+    input_topic: /foam_grasp/target_point_base_latched
+    table_height: 0.001
+    cube_size: 0.050
+    cylinder_diameter: 0.070
+    cylinder_height: 0.070
+    sphere_diameter: 0.060
+    tool_offset: 0.1358
+    pregrasp_clearance: 0.055
+    lift_clearance: 0.055
+    target_timeout: 0.5
+    # base_link planar correction applied to PREGRASP/GRASP/LIFT, limited to
+    # +/-30 mm and dynamically adjustable with ros2 param set.
+    # Current Piper + DaBai rig was physically validated with +30 mm in base X.
+    # Tune only after re-running hand-eye/TCP validation on a different rig.
+    grasp_offset_x: 0.030
+    grasp_offset_y: 0.0

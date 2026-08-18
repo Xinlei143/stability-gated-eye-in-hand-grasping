@@ -1,0 +1,10 @@
+numpy==1.26.4
+# setuptools 79 passes strip_trailing_zero to packaging.version;
+# Ubuntu 22.04's system packaging 21.3 does not support that argument.
+packaging>=24,<26
+pillow>=10,<13
+matplotlib>=3.7,<4
+tqdm>=4.65,<5
+nvidia-nvjitlink-cu12==12.1.105
+python-can==4.6.1
+piper-sdk==0.6.1
