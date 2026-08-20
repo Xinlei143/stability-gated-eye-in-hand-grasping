@@ -42,6 +42,16 @@ class SceneAssetTest(unittest.TestCase):
             self.assertAlmostEqual(pose[2] - height / 2.0, tabletop)
             self.assertEqual(pose[:2], [0.40, 0.00])
 
+    def test_stage3_motion_and_perception_defaults_preserve_static_ideal_mode(self):
+        config = yaml.safe_load(
+            (PACKAGE_ROOT / "config" / "simulation.yaml").read_text()
+        )
+        self.assertEqual(config["motion"]["trajectory"], "static")
+        self.assertEqual(config["motion"]["velocity"], [0.01, 0.00, 0.00])
+        self.assertEqual(config["motion"]["seed"], 42)
+        self.assertEqual(config["perception"]["source"], "ground_truth")
+        self.assertEqual(config["perception"]["seed"], 42)
+
     def test_piper_composition_owns_world_and_reuses_upstream_assets(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         piper = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
@@ -98,13 +108,17 @@ class SceneAssetTest(unittest.TestCase):
         self.assertEqual(world.findtext("physics/real_time_update_rate"), "1000")
         self.assertIsNone(world.find("model[@name='grasp_table']"))
 
-    def test_bringup_exposes_only_the_fixed_static_grasp_pipeline(self):
+    def test_bringup_exposes_stage3_motion_and_perception_pipeline(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         for value in (
             "target_model",
             "run_grasp_pipeline",
             "execute_motion",
-            "static_target_source_node",
+            "trajectory",
+            "perception_source",
+            "target_motion_node",
+            "simulated_perception_node",
+            "rgbd",
             "target_latch_node",
             "grasp_pose_preview_node",
             "object_grasp_sequence",
@@ -113,6 +127,7 @@ class SceneAssetTest(unittest.TestCase):
             self.assertIn(value, bringup)
         self.assertNotIn("start_executor", bringup)
         self.assertNotIn('executable="executor"', bringup)
+        self.assertIn("requires trajectory:=static", bringup)
 
     def test_static_source_uses_selected_base_frame_topic(self):
         source = (
@@ -121,6 +136,18 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn('TARGET_MODELS = ("cube", "cylinder", "sphere")', source)
         self.assertIn('f"/foam_grasp/{self.target_model}_point_base"', source)
         self.assertIn('message.header.frame_id = self.base_frame', source)
+
+    def test_stage3_nodes_preserve_existing_observation_interface(self):
+        motion = (
+            PACKAGE_ROOT / "foam_grasp_sim" / "target_motion_node.py"
+        ).read_text()
+        perception = (
+            PACKAGE_ROOT / "foam_grasp_sim" / "simulated_perception_node.py"
+        ).read_text()
+        self.assertIn('"/foam_grasp_sim/target_ground_truth"', motion)
+        self.assertIn('f"/foam_grasp/{self.target_model}_point_base"', perception)
+        self.assertIn("SetEntityState", motion)
+        self.assertIn("ModelStates", motion)
 
 
 if __name__ == "__main__":
