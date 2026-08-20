@@ -1,13 +1,68 @@
-/**:
-  ros__parameters:
-    use_sim_time: true
-    execution_backend: simulation
-    arm_trajectory_action: /arm_controller/follow_joint_trajectory
-    gripper_trajectory_action: /gripper_controller/follow_joint_trajectory
-    gripper_joint_name: joint7
-    gripper_feedback_topic: /gripper_controller/controller_state
-    gripper_command_scale: 1.0
-    gripper_feedback_scale: 1.0
-    final_joint_tolerance: 0.05
-    gripper_tolerance: 0.004
-    action_server_timeout: 5.0
+# Single source of truth for the stage-2 static Gazebo scene and its
+# foam_grasp integration.  sim_bringup.launch.py passes these values to the
+# relevant nodes; this is intentionally not a generic ROS parameter file.
+scene:
+  table:
+    # Piper base_link coordinates.  The tabletop is z = 0.001 m.
+    size: [0.60, 0.70, 0.05]
+    pose: [0.40, 0.00, -0.024]
+  targets:
+    # Exactly one target is spawned.  All classes share the same x/y grasp
+    # location; z is the object centre and leaves its base on the tabletop.
+    cube:
+      pose: [0.40, 0.00, 0.026]
+    cylinder:
+      pose: [0.40, 0.00, 0.036]
+    sphere:
+      pose: [0.40, 0.00, 0.031]
+
+execution:
+  use_sim_time: true
+  execution_backend: simulation
+  arm_trajectory_action: /arm_controller/follow_joint_trajectory
+  gripper_trajectory_action: /gripper_controller/follow_joint_trajectory
+  gripper_joint_name: joint7
+  gripper_feedback_topic: /gripper_controller/controller_state
+  # Piper Gazebo joint7 is one 35 mm jaw.  foam_grasp uses total opening.
+  gripper_command_scale: 0.5
+  gripper_feedback_scale: 2.0
+  final_joint_tolerance: 0.05
+  gripper_tolerance: 0.004
+  action_server_timeout: 5.0
+
+pipeline:
+  target_publish_rate: 10.0
+  target_latch:
+    base_frame: base_link
+    sample_window: 1.5
+    minimum_samples: 15
+    maximum_spread: 0.010
+  pose_preview:
+    base_frame: base_link
+    table_height: 0.001
+    cube_size: 0.050
+    cylinder_diameter: 0.070
+    cylinder_height: 0.070
+    sphere_diameter: 0.060
+    grasp_offset_x: 0.0
+    grasp_offset_y: 0.0
+
+motion:
+  trajectory: static
+  velocity: [0.01, 0.00, 0.00]
+  move_duration: 4.0
+  stop_duration: 6.0
+  control_rate: 30.0
+  ground_truth_rate: 30.0
+  seed: 42
+
+perception:
+  source: ground_truth
+  sampling_rate: 10.0
+  latency_ms: 100.0
+  noise_std_mm: 5.0
+  dropout_probability: 0.10
+  outlier_probability: 0.01
+  outlier_range_mm: 50.0
+  history_duration: 10.0
+  seed: 42

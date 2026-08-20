@@ -32,5 +32,13 @@ setup(
     maintainer_email="yue24382@gtiit.edu.cn",
     description="Gazebo Classic simulation composition for foam grasping.",
     license="Apache-2.0",
-    entry_points={"console_scripts": []},
+    entry_points={
+        "console_scripts": [
+            "static_target_source_node = "
+            "foam_grasp_sim.static_target_source_node:main",
+            "target_motion_node = foam_grasp_sim.target_motion_node:main",
+            "simulated_perception_node = "
+            "foam_grasp_sim.simulated_perception_node:main",
+        ],
+    },
 )
