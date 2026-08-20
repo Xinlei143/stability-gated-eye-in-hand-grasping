@@ -21,6 +21,8 @@
   <exec_depend>cv_bridge</exec_depend>
   <exec_depend>moveit_msgs</exec_depend>
   <exec_depend>moveit_configs_utils</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
+  <exec_depend>trajectory_msgs</exec_depend>
   <exec_depend>piper_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
