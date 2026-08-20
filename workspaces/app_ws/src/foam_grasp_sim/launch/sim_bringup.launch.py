@@ -1,6 +1,13 @@
-"""Compose Piper Gazebo, MoveIt planning and the static grasp scene."""
+"""One-launch static grasp pipeline for the Piper Gazebo simulation.
+
+The scene is intentionally fixed to one static target.  Stage 3 concepts such
+as target motion, camera perception, noise, delay and benchmarking do not
+belong in this launch.
+"""
 
 from pathlib import Path
+
+import yaml
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -9,6 +16,33 @@ from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+
+
+TARGET_MODELS = ("cube", "cylinder", "sphere")
+
+
+def _load_simulation_config(package_share):
+    config_path = Path(package_share) / "config" / "simulation.yaml"
+    with config_path.open(encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    try:
+        table = config["scene"]["table"]
+        targets = config["scene"]["targets"]
+        execution = config["execution"]
+        pipeline = config["pipeline"]
+    except (KeyError, TypeError) as error:
+        raise RuntimeError(
+            f"Invalid simulation configuration {config_path}: {error}"
+        ) from error
+    for key in ("size", "pose"):
+        if len(table[key]) != 3:
+            raise RuntimeError(f"scene.table.{key} must contain three values")
+    for model in TARGET_MODELS:
+        if model not in targets or len(targets[model]["pose"]) != 3:
+            raise RuntimeError(
+                f"scene.targets.{model}.pose must contain three values"
+            )
+    return table, targets, execution, pipeline
 
 
 def _scene_spawn(package_share, model, entity, pose, condition=None):
@@ -29,29 +63,28 @@ def _scene_spawn(package_share, model, entity, pose, condition=None):
             str(pose[1]),
             "-z",
             str(pose[2]),
+            "-timeout",
+            "60.0",
         ],
         condition=condition,
     )
 
 
+def _target_condition(target_model, name):
+    return IfCondition(PythonExpression(["'", target_model, f"' == '{name}'"]))
+
+
 def generate_launch_description():
     package_share = get_package_share_directory("foam_grasp_sim")
-    piper_share = get_package_share_directory("piper_gazebo")
+    table, targets, execution, pipeline = _load_simulation_config(package_share)
     use_rviz = LaunchConfiguration("use_rviz")
     target_model = LaunchConfiguration("target_model")
-    start_executor = LaunchConfiguration("start_executor")
+    run_grasp_pipeline = LaunchConfiguration("run_grasp_pipeline")
     execute_motion = LaunchConfiguration("execute_motion")
-    executor = LaunchConfiguration("executor")
-    simulation_config = str(Path(package_share) / "config" / "simulation.yaml")
 
     piper_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            str(
-                Path(piper_share)
-                / "launch"
-                / "piper_with_gripper"
-                / "piper_gazebo.launch.py"
-            )
+            str(Path(package_share) / "launch" / "piper_sim.launch.py")
         )
     )
     moveit_launch = IncludeLaunchDescription(
@@ -64,79 +97,156 @@ def generate_launch_description():
         }.items(),
     )
 
-    table = _scene_spawn(package_share, "table", "grasp_table", (0.40, 0.0, 0.0))
-    cube = _scene_spawn(
-        package_share,
-        "cube",
-        "foam_cube",
-        (0.40, 0.0, 0.055),
-        IfCondition(PythonExpression(["'", target_model, "' == 'cube'"])),
+    table_spawn = _scene_spawn(
+        package_share, "table", "grasp_table", table["pose"]
     )
-    cylinder = _scene_spawn(
-        package_share,
-        "cylinder",
-        "foam_cylinder",
-        (0.40, 0.16, 0.070),
-        IfCondition(PythonExpression(["'", target_model, "' == 'cylinder'"])),
+    target_spawns = [
+        _scene_spawn(
+            package_share,
+            model,
+            f"foam_{model}",
+            targets[model]["pose"],
+            _target_condition(target_model, model),
+        )
+        for model in TARGET_MODELS
+    ]
+
+    source_parameters = {
+        "use_sim_time": execution["use_sim_time"],
+        "target_model": target_model,
+        "base_frame": pipeline["target_latch"]["base_frame"],
+        "publish_rate": pipeline["target_publish_rate"],
+    }
+    source_parameters.update(
+        {
+            f"{model}_pose": targets[model]["pose"]
+            for model in TARGET_MODELS
+        }
     )
-    sphere = _scene_spawn(
-        package_share,
-        "sphere",
-        "foam_sphere",
-        (0.40, -0.16, 0.060),
-        IfCondition(PythonExpression(["'", target_model, "' == 'sphere'"])),
+    static_target_source = Node(
+        package="foam_grasp_sim",
+        executable="static_target_source_node",
+        name="foam_static_target_source",
+        output="screen",
+        parameters=[source_parameters],
+        condition=IfCondition(run_grasp_pipeline),
     )
 
-    executor_plan_node = Node(
+    latch_parameters = {"use_sim_time": execution["use_sim_time"]}
+    latch_parameters.update(pipeline["target_latch"])
+    target_latch = Node(
         package="foam_grasp",
-        executable=executor,
-        name="foam_grasp_sim_executor",
+        executable="target_latch_node",
+        name="foam_target_latch",
         output="screen",
-        parameters=[simulation_config],
-        arguments=["--execution-backend", "simulation"],
+        parameters=[latch_parameters],
+        condition=IfCondition(run_grasp_pipeline),
+    )
+    pose_parameters = {"use_sim_time": execution["use_sim_time"]}
+    pose_parameters.update(pipeline["pose_preview"])
+    grasp_pose_preview = Node(
+        package="foam_grasp",
+        executable="grasp_pose_preview_node",
+        name="foam_grasp_pose_preview",
+        output="screen",
+        parameters=[pose_parameters],
+        condition=IfCondition(run_grasp_pipeline),
+    )
+
+    sequence_parameters = dict(execution)
+    sequence_parameters.update(
+        {
+            "table_size": table["size"],
+            "table_pose": table["pose"],
+        }
+    )
+    sequence_arguments = [
+        "--execution-backend",
+        "simulation",
+        "--target-class",
+        target_model,
+        "--auto-latch",
+    ]
+    plan_sequence = Node(
+        package="foam_grasp",
+        executable="object_grasp_sequence",
+        name="foam_static_grasp_sequence",
+        output="screen",
+        parameters=[sequence_parameters],
+        arguments=sequence_arguments,
         condition=IfCondition(
             PythonExpression(
-                ["'", start_executor, "' == 'true' and '", execute_motion, "' == 'false'"]
+                [
+                    "'",
+                    run_grasp_pipeline,
+                    "' == 'true' and '",
+                    execute_motion,
+                    "' != 'true'",
+                ]
             )
         ),
     )
-    executor_execute_node = Node(
+    execute_sequence = Node(
         package="foam_grasp",
-        executable=executor,
-        name="foam_grasp_sim_executor",
+        executable="object_grasp_sequence",
+        name="foam_static_grasp_sequence",
         output="screen",
-        parameters=[simulation_config],
-        arguments=[
-            "--execution-backend",
-            "simulation",
+        parameters=[sequence_parameters],
+        arguments=sequence_arguments
+        + [
             "--execute",
+            "--auto",
             "--confirm",
-            "AUTO_MOVE_TO_OBSERVE",
+            "AUTO_FULL_OBJECT_GRASP",
+            "--countdown-seconds",
+            "0",
         ],
         condition=IfCondition(
             PythonExpression(
-                ["'", start_executor, "' == 'true' and '", execute_motion, "' == 'true'"]
+                [
+                    "'",
+                    run_grasp_pipeline,
+                    "' == 'true' and '",
+                    execute_motion,
+                    "' == 'true'",
+                ]
             )
         ),
     )
 
-    # The pinned Piper launch starts Gazebo itself and does not expose a world
-    # argument.  Spawn the package-owned static assets after Gazebo has loaded.
+    # Let Gazebo expose its factory service before static SDF entities are
+    # spawned.  The source begins at the same point, after its target exists.
     scene = TimerAction(
         period=5.0,
-        actions=[table, cube, cylinder, sphere],
+        actions=[table_spawn, *target_spawns, static_target_source],
     )
+    # The sequence itself waits for feedback, services and target samples.  A
+    # short delay prevents its first checks racing controller initialisation.
+    sequence = TimerAction(period=10.0, actions=[plan_sequence, execute_sequence])
+
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_rviz", default_value="true"),
-            DeclareLaunchArgument("target_model", default_value="cube"),
-            DeclareLaunchArgument("start_executor", default_value="false"),
-            DeclareLaunchArgument("execute_motion", default_value="false"),
-            DeclareLaunchArgument("executor", default_value="move_to_observe"),
+            DeclareLaunchArgument(
+                "target_model",
+                default_value="cube",
+                description="Static target: cube, cylinder, or sphere",
+            ),
+            DeclareLaunchArgument(
+                "run_grasp_pipeline",
+                default_value="true",
+                description="Start static target, latch, pose preview and sequence",
+            ),
+            DeclareLaunchArgument(
+                "execute_motion",
+                default_value="false",
+                description="Drive controllers only after explicit opt-in",
+            ),
             piper_launch,
             moveit_launch,
+            target_latch,
+            grasp_pose_preview,
             scene,
-            executor_plan_node,
-            executor_execute_node,
+            sequence,
         ]
     )

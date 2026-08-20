@@ -43,8 +43,11 @@ class SceneAssetTest(unittest.TestCase):
             self.assertEqual(pose[:2], [0.40, 0.00])
 
     def test_piper_composition_owns_world_and_reuses_upstream_assets(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         piper = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
         moveit = (PACKAGE_ROOT / "launch" / "sim_moveit.launch.py").read_text()
+        self.assertIn("piper_sim.launch.py", bringup)
+        self.assertNotIn("piper_gazebo.launch.py", bringup)
         self.assertIn("piper_description_gazebo.xacro", piper)
         self.assertIn("piper_gazebo", piper)
         self.assertIn("joint8_ctrl.py", piper)
@@ -94,6 +97,30 @@ class SceneAssetTest(unittest.TestCase):
         self.assertEqual(world.findtext("physics/max_step_size"), "0.001")
         self.assertEqual(world.findtext("physics/real_time_update_rate"), "1000")
         self.assertIsNone(world.find("model[@name='grasp_table']"))
+
+    def test_bringup_exposes_only_the_fixed_static_grasp_pipeline(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        for value in (
+            "target_model",
+            "run_grasp_pipeline",
+            "execute_motion",
+            "static_target_source_node",
+            "target_latch_node",
+            "grasp_pose_preview_node",
+            "object_grasp_sequence",
+            "AUTO_FULL_OBJECT_GRASP",
+        ):
+            self.assertIn(value, bringup)
+        self.assertNotIn("start_executor", bringup)
+        self.assertNotIn('executable="executor"', bringup)
+
+    def test_static_source_uses_selected_base_frame_topic(self):
+        source = (
+            PACKAGE_ROOT / "foam_grasp_sim" / "static_target_source_node.py"
+        ).read_text()
+        self.assertIn('TARGET_MODELS = ("cube", "cylinder", "sphere")', source)
+        self.assertIn('f"/foam_grasp/{self.target_model}_point_base"', source)
+        self.assertIn('message.header.frame_id = self.base_frame', source)
 
 
 if __name__ == "__main__":
