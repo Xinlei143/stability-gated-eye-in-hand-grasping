@@ -36,6 +36,7 @@ data/*
 *.tar
 *.tar.gz
 *.zip
+.vscode
 
 # Credentials and local overrides must never be published
 .env
@@ -51,8 +52,10 @@ dependencies/python-system.freeze.txt
 dependencies/ubuntu-packages.txt
 dependencies/nvidia-smi.txt
 
+
 __pycache__/
 *.py[cod]
 .DS_Store
 ._*
 Log/
+docs/Gazebo_test.md
