@@ -56,6 +56,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         self,
         target_class="cube",
         cylinder_chord_offset_m=0.018,
+        execution_backend="real",
     ):
         # The preview topics keep publishing while a grasp is executed.  Once
         # an adaptive candidate is selected, callbacks must not overwrite the
@@ -64,6 +65,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         super().__init__(
             target_class=target_class,
             pregrasp_topic="/foam_grasp/target_pregrasp_pose",
+            execution_backend=execution_backend,
         )
         self.grasp_pose = None
         self.grasp_received_at = 0.0
@@ -147,13 +149,12 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         deadline = time.monotonic() + timeout_sec
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
-            if (
-                len(self.joint_samples) >= 10
-                and self.arm_status is not None
-                and self.end_pose is not None
-            ):
+            ready = len(self.joint_samples) >= 10
+            if self.execution_backend.requires_piper_status:
+                ready = ready and self.arm_status is not None and self.end_pose is not None
+            if ready:
                 return
-        raise RuntimeError("缺少Piper关节、状态或末端位姿反馈")
+        raise RuntimeError("缺少执行后端所需的关节或状态反馈")
 
     def auto_latch_target(self):
         self.candidate_locked = False
@@ -866,7 +867,12 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             self.display_publisher.publish(display)
             rclpy.spin_once(self, timeout_sec=0.05)
 
-    def execute_untimed_cartesian(
+    def execute_untimed_cartesian(self, *args, **kwargs):
+        return self.execution_backend.execute_cartesian_trajectory(
+            *args, **kwargs
+        )
+
+    def _real_execute_untimed_cartesian(
         self,
         name,
         trajectory,
@@ -905,7 +911,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                         speed_percent,
                         effort,
                     )
-                    self.command_publisher.publish(message)
+                    self.execution_backend.publish_message(message)
                     rclpy.spin_once(self, timeout_sec=0.05)
                     if time.monotonic() - self.latest_joint_received_at > 0.3:
                         raise RuntimeError(f"{name}执行期间反馈中断")
@@ -930,7 +936,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         final_deadline = time.monotonic() + 1.0
         final_target = list(trajectory.points[-1].positions)
         while rclpy.ok() and time.monotonic() < final_deadline:
-            self.command_publisher.publish(
+            self.execution_backend.publish_message(
                 self.make_command(
                     final_target,
                     gripper_target_m,
@@ -980,27 +986,28 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         now = time.monotonic()
         if now - self.latest_joint_received_at > 0.3:
             raise RuntimeError(f"{name}检查时关节反馈过期")
-        if now - self.arm_status_received_at > 0.3:
-            raise RuntimeError(f"{name}检查时状态反馈过期")
-        if now - self.end_pose_received_at > 0.3:
-            raise RuntimeError(f"{name}检查时末端位姿过期")
-        if self.arm_status.arm_status != 0 or self.arm_status.err_code != 0:
-            raise RuntimeError(f"{name}检查时机械臂状态异常")
-        if self.arm_status.motion_status != 0:
-            raise RuntimeError(
-                f"{name}检查时尚未到达指定点: "
-                f"motion_status={self.arm_status.motion_status}"
+        if self.execution_backend.requires_piper_status:
+            if now - self.arm_status_received_at > 0.3:
+                raise RuntimeError(f"{name}检查时状态反馈过期")
+            if now - self.end_pose_received_at > 0.3:
+                raise RuntimeError(f"{name}检查时末端位姿过期")
+            if self.arm_status.arm_status != 0 or self.arm_status.err_code != 0:
+                raise RuntimeError(f"{name}检查时机械臂状态异常")
+            if self.arm_status.motion_status != 0:
+                raise RuntimeError(
+                    f"{name}检查时尚未到达指定点: "
+                    f"motion_status={self.arm_status.motion_status}"
+                )
+            communication_errors = (
+                self.arm_status.communication_status_joint_1,
+                self.arm_status.communication_status_joint_2,
+                self.arm_status.communication_status_joint_3,
+                self.arm_status.communication_status_joint_4,
+                self.arm_status.communication_status_joint_5,
+                self.arm_status.communication_status_joint_6,
             )
-        communication_errors = (
-            self.arm_status.communication_status_joint_1,
-            self.arm_status.communication_status_joint_2,
-            self.arm_status.communication_status_joint_3,
-            self.arm_status.communication_status_joint_4,
-            self.arm_status.communication_status_joint_5,
-            self.arm_status.communication_status_joint_6,
-        )
-        if any(communication_errors):
-            raise RuntimeError(f"{name}检查时存在关节通信异常")
+            if any(communication_errors):
+                raise RuntimeError(f"{name}检查时存在关节通信异常")
         samples = list(self.joint_samples)[-10:]
         if len(samples) < 10:
             raise RuntimeError(f"{name}检查时稳定样本不足")
@@ -1029,30 +1036,35 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                     f"{name}关节目标误差过大: {joint_error:.4f}rad"
                 )
 
-        actual = self.end_pose.position
-        target = expected_pose.pose.position
-        position_error = math.sqrt(
-            (actual.x - target.x) ** 2
-            + (actual.y - target.y) ** 2
-            + (actual.z - target.z) ** 2
-        )
-        if position_error > 0.020:
-            raise RuntimeError(
-                f"{name}末端位置误差过大: {position_error:.4f}m; "
-                f"actual=({actual.x:.4f},{actual.y:.4f},{actual.z:.4f}); "
-                f"selected_link6=({target.x:.4f},{target.y:.4f},"
-                f"{target.z:.4f})"
+        details = "后端反馈检查通过"
+        if self.execution_backend.requires_piper_status:
+            actual = self.end_pose.position
+            target = expected_pose.pose.position
+            position_error = math.sqrt(
+                (actual.x - target.x) ** 2
+                + (actual.y - target.y) ** 2
+                + (actual.z - target.z) ** 2
             )
-        details = f"link6位置误差{position_error:.4f}m"
+            if position_error > 0.020:
+                raise RuntimeError(
+                    f"{name}末端位置误差过大: {position_error:.4f}m; "
+                    f"actual=({actual.x:.4f},{actual.y:.4f},{actual.z:.4f}); "
+                    f"selected_link6=({target.x:.4f},{target.y:.4f},"
+                    f"{target.z:.4f})"
+                )
+            details = f"link6位置误差{position_error:.4f}m"
         if joint_error is not None:
             details += f"，关节误差{joint_error:.4f}rad"
         print(f"{name}自动检查通过：{details}")
 
     def command_gripper(self, target_actual_m, args):
+        return self.execution_backend.command_gripper(target_actual_m, args)
+
+    def _real_command_gripper(self, target_actual_m, args):
         arm_hold = self.current_positions()[:6]
         deadline = time.monotonic() + 1.0
         while rclpy.ok() and time.monotonic() < deadline:
-            self.command_publisher.publish(
+            self.execution_backend.publish_message(
                 self.make_command(
                     arm_hold,
                     target_actual_m,
@@ -1083,6 +1095,12 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="泡沫目标物体抓取整合流程")
+    parser.add_argument(
+        "--execution-backend",
+        choices=("real", "simulation"),
+        default="real",
+        help="最终执行通道；默认real，simulation使用ros2_control action",
+    )
     parser.add_argument(
         "--target-class",
         choices=SUPPORTED_CLASSES,
@@ -1172,6 +1190,7 @@ def main():
     node = FoamCubeGraspSequence(
         args.target_class,
         args.cylinder_chord_offset_mm / 1000.0,
+        args.execution_backend,
     )
     try:
         if args.auto_latch:

@@ -45,8 +45,8 @@ GRASP_WORKSPACE_Z_MAX = 0.20
 
 
 class FoamTargetCenterNode(FoamMoveToObserve):
-    def __init__(self, target_class, border_margin, sample_count):
-        super().__init__()
+    def __init__(self, target_class, border_margin, sample_count, execution_backend="real"):
+        super().__init__(execution_backend=execution_backend)
         self.target_class = target_class
         self.target_class_id = CLASS_IDS[target_class]
         self.border_margin = int(border_margin)
@@ -317,6 +317,12 @@ def parse_args():
         "--target-class",
         choices=tuple(CLASS_IDS),
         required=True,
+    )
+    parser.add_argument(
+        "--execution-backend",
+        choices=("real", "simulation"),
+        default="real",
+        help="最终执行通道；默认real，simulation使用ros2_control action",
     )
     parser.add_argument(
         "--execute",
@@ -1107,43 +1113,44 @@ def validate_servo_feedback(
     now = time.monotonic()
     if now - node.latest_joint_received_at > 0.25:
         raise RuntimeError("伺服期间关节反馈中断")
-    if now - node.arm_status_received_at > 0.25:
-        raise RuntimeError("伺服期间机械臂状态反馈中断")
+    if node.execution_backend.requires_piper_status:
+        if now - node.arm_status_received_at > 0.25:
+            raise RuntimeError("伺服期间机械臂状态反馈中断")
 
-    status = node.arm_status
-    if (
-        status is None
-        or status.arm_status != 0
-        or status.err_code != 0
-    ):
-        raise RuntimeError("伺服期间机械臂状态异常")
-    if status.motion_status not in (0, 1):
-        raise RuntimeError(
-            "伺服期间运动状态异常："
-            f"{status.motion_status}"
-        )
-    if any(
-        (
-            status.communication_status_joint_1,
-            status.communication_status_joint_2,
-            status.communication_status_joint_3,
-            status.communication_status_joint_4,
-            status.communication_status_joint_5,
-            status.communication_status_joint_6,
-        )
-    ):
-        raise RuntimeError("伺服期间出现关节通信异常")
-    if any(
-        (
-            status.joint_1_angle_limit,
-            status.joint_2_angle_limit,
-            status.joint_3_angle_limit,
-            status.joint_4_angle_limit,
-            status.joint_5_angle_limit,
-            status.joint_6_angle_limit,
-        )
-    ):
-        raise RuntimeError("伺服期间触发关节角度限位")
+        status = node.arm_status
+        if (
+            status is None
+            or status.arm_status != 0
+            or status.err_code != 0
+        ):
+            raise RuntimeError("伺服期间机械臂状态异常")
+        if status.motion_status not in (0, 1):
+            raise RuntimeError(
+                "伺服期间运动状态异常："
+                f"{status.motion_status}"
+            )
+        if any(
+            (
+                status.communication_status_joint_1,
+                status.communication_status_joint_2,
+                status.communication_status_joint_3,
+                status.communication_status_joint_4,
+                status.communication_status_joint_5,
+                status.communication_status_joint_6,
+            )
+        ):
+            raise RuntimeError("伺服期间出现关节通信异常")
+        if any(
+            (
+                status.joint_1_angle_limit,
+                status.joint_2_angle_limit,
+                status.joint_3_angle_limit,
+                status.joint_4_angle_limit,
+                status.joint_5_angle_limit,
+                status.joint_6_angle_limit,
+            )
+        ):
+            raise RuntimeError("伺服期间触发关节角度限位")
 
     current = node.current_positions()
     node.validate_start_joint_limits(current[:6])
@@ -1170,13 +1177,12 @@ def publish_servo_command(
     speed_percent,
     effort,
 ):
-    message = node.make_command(
+    node.execution_backend.send_servo_command(
         arm_positions,
         gripper_opening,
         speed_percent,
         effort,
     )
-    node.command_publisher.publish(message)
 
 
 def validate_short_trajectory(
@@ -2586,6 +2592,7 @@ def main():
         args.target_class,
         args.border_margin_pixels,
         args.sample_count,
+        args.execution_backend,
     )
 
     pan_index = args.pan_joint - 1

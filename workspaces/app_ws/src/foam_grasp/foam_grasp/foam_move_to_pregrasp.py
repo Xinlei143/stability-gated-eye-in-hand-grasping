@@ -2,9 +2,9 @@
 """Plan and optionally execute only CURRENT -> cube PREGRASP on Piper.
 
 Default operation is plan/validation only.  Execution requires explicit flags
-and publishes complete seven-element JointState commands directly to the local
-Piper ROS 2 driver.  It never descends to GRASP, closes the gripper, lifts an
-object, disables the arm, resets the arm, or sends an end-pose command.
+and delegates the final trajectory command to the selected real or simulation
+backend.  It never descends to GRASP, closes the gripper, lifts an object,
+disables the arm, resets the arm, or sends an end-pose command.
 """
 
 import argparse
@@ -31,6 +31,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import String
+
+from foam_grasp.execution import create_backend
 
 
 ARM_JOINTS = (
@@ -69,12 +71,19 @@ class FoamMoveToPregrasp(Node):
         self,
         target_class="cube",
         pregrasp_topic="/foam_grasp/cube_pregrasp_pose",
+        execution_backend="real",
     ):
         super().__init__("foam_move_to_pregrasp")
 
         if target_class not in ("cube", "cylinder", "sphere"):
             raise RuntimeError(f"不支持的目标类别: {target_class!r}")
         self.target_class = target_class
+        self.arm_joint_names = tuple(ARM_JOINTS)
+        self.command_names = tuple(COMMAND_NAMES)
+        if not self.has_parameter("execution_backend"):
+            self.declare_parameter("execution_backend", execution_backend)
+        selected_backend = self.get_parameter("execution_backend").value
+        self.execution_backend = create_backend(self, selected_backend)
 
         self.latest_joint_state = None
         self.latest_joint_received_at = 0.0
@@ -91,16 +100,18 @@ class FoamMoveToPregrasp(Node):
 
         self.joint_subscription = self.create_subscription(
             JointState,
-            "/joint_states_single",
+            self.execution_backend.feedback_topic,
             self.joint_callback,
             20,
         )
-        self.status_subscription = self.create_subscription(
-            PiperStatusMsg,
-            "/arm_status",
-            self.status_callback,
-            20,
-        )
+        self.status_subscription = None
+        if self.execution_backend.requires_piper_status:
+            self.status_subscription = self.create_subscription(
+                PiperStatusMsg,
+                "/arm_status",
+                self.status_callback,
+                20,
+            )
         self.end_pose_subscription = self.create_subscription(
             Pose,
             "/end_pose",
@@ -136,18 +147,28 @@ class FoamMoveToPregrasp(Node):
         )
 
         self.get_logger().warning(
-            "DEFAULT IS PLAN-ONLY; execution is limited to CURRENT->PREGRASP"
+            "DEFAULT IS PLAN-ONLY; execution is limited to CURRENT->PREGRASP; "
+            f"backend={self.execution_backend.name}"
         )
 
+    @staticmethod
+    def is_finite(value):
+        return math.isfinite(float(value))
+
+    def declare_or_get_parameter(self, name, default):
+        if not self.has_parameter(name):
+            self.declare_parameter(name, default)
+        return self.get_parameter(name).value
+
     def joint_callback(self, message):
-        positions = dict(zip(message.name, message.position))
-        if not all(name in positions for name in COMMAND_NAMES):
-            return
-        values = [float(positions[name]) for name in COMMAND_NAMES]
-        if not all(math.isfinite(value) for value in values):
+        values = self.execution_backend.normalize_joint_positions(message)
+        if values is None:
             return
         now = time.monotonic()
-        self.latest_joint_state = copy.deepcopy(message)
+        normalized = copy.deepcopy(message)
+        normalized.name = list(COMMAND_NAMES)
+        normalized.position = list(values)
+        self.latest_joint_state = normalized
         self.latest_joint_received_at = now
         self.joint_samples.append((now, values))
 
@@ -167,6 +188,10 @@ class FoamMoveToPregrasp(Node):
         self.latched_class = str(message.data)
         self.latched_class_received_at = time.monotonic()
 
+    def destroy_node(self):
+        self.execution_backend.close()
+        return super().destroy_node()
+
     def spin_for(self, seconds):
         deadline = time.monotonic() + seconds
         while rclpy.ok() and time.monotonic() < deadline:
@@ -176,16 +201,13 @@ class FoamMoveToPregrasp(Node):
         deadline = time.monotonic() + timeout_sec
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
-            if (
-                len(self.joint_samples) >= 10
-                and self.arm_status is not None
-                and self.end_pose is not None
-                and self.pregrasp_pose is not None
-                and self.latched_class is not None
-            ):
+            ready = len(self.joint_samples) >= 10 and self.pregrasp_pose is not None
+            if self.execution_backend.requires_piper_status:
+                ready = ready and self.arm_status is not None and self.end_pose is not None
+            if ready and self.latched_class is not None:
                 return
         raise RuntimeError(
-            "缺少关节、机械臂状态、末端位姿、PREGRASP或锁定类别"
+            "缺少关节、后端反馈、PREGRASP或锁定类别"
         )
 
     def wait_for_services(self):
@@ -222,48 +244,56 @@ class FoamMoveToPregrasp(Node):
         allow_not_at_target=False,
     ):
         now = time.monotonic()
-        timestamps = (
-            ("关节反馈", self.latest_joint_received_at),
-            ("机械臂状态", self.arm_status_received_at),
-            ("末端位姿", self.end_pose_received_at),
-            ("PREGRASP", self.pregrasp_received_at),
-            ("锁定类别", self.latched_class_received_at),
+        timestamps = [("关节反馈", self.latest_joint_received_at)]
+        if self.execution_backend.requires_piper_status:
+            timestamps.extend(
+                [
+                    ("机械臂状态", self.arm_status_received_at),
+                    ("末端位姿", self.end_pose_received_at),
+                ]
+            )
+        timestamps.extend(
+            [
+                ("PREGRASP", self.pregrasp_received_at),
+                ("锁定类别", self.latched_class_received_at),
+            ]
         )
         for label, timestamp in timestamps:
             if now - timestamp > 0.6:
                 raise RuntimeError(f"{label}已过期")
 
-        status = self.arm_status
-        if status.arm_status != 0 or status.err_code != 0:
-            raise RuntimeError(
-                f"机械臂异常: arm_status={status.arm_status}, "
-                f"err_code={status.err_code}"
-            )
-        if status.motion_status != 0 and not allow_not_at_target:
-            raise RuntimeError(
-                "机械臂尚未到达上一个指定点: "
-                f"motion_status={status.motion_status}"
-            )
-        communication_errors = [
-            status.communication_status_joint_1,
-            status.communication_status_joint_2,
-            status.communication_status_joint_3,
-            status.communication_status_joint_4,
-            status.communication_status_joint_5,
-            status.communication_status_joint_6,
-        ]
-        if any(communication_errors):
-            raise RuntimeError("机械臂存在关节通信异常")
-        angle_limit_flags = [
-            status.joint_1_angle_limit,
-            status.joint_2_angle_limit,
-            status.joint_3_angle_limit,
-            status.joint_4_angle_limit,
-            status.joint_5_angle_limit,
-            status.joint_6_angle_limit,
-        ]
-        if any(angle_limit_flags):
-            raise RuntimeError("真机报告至少一个关节触发角度限位")
+        if self.execution_backend.requires_piper_status:
+            status = self.arm_status
+            if status.arm_status != 0 or status.err_code != 0:
+                raise RuntimeError(
+                    f"机械臂异常: arm_status={status.arm_status}, "
+                    f"err_code={status.err_code}"
+                )
+            if status.motion_status != 0 and not allow_not_at_target:
+                raise RuntimeError(
+                    "机械臂尚未到达上一个指定点: "
+                    f"motion_status={status.motion_status}"
+                )
+            communication_errors = [
+                status.communication_status_joint_1,
+                status.communication_status_joint_2,
+                status.communication_status_joint_3,
+                status.communication_status_joint_4,
+                status.communication_status_joint_5,
+                status.communication_status_joint_6,
+            ]
+            if any(communication_errors):
+                raise RuntimeError("机械臂存在关节通信异常")
+            angle_limit_flags = [
+                status.joint_1_angle_limit,
+                status.joint_2_angle_limit,
+                status.joint_3_angle_limit,
+                status.joint_4_angle_limit,
+                status.joint_5_angle_limit,
+                status.joint_6_angle_limit,
+            ]
+            if any(angle_limit_flags):
+                raise RuntimeError("真机报告至少一个关节触发角度限位")
         if self.latched_class != self.target_class:
             raise RuntimeError(
                 f"锁定类别不是{self.target_class}，"
@@ -282,7 +312,10 @@ class FoamMoveToPregrasp(Node):
                 "PREGRASP超出保守工作空间: "
                 f"({target.x:.3f}, {target.y:.3f}, {target.z:.3f})"
             )
-        if self.end_pose.position.z < 0.22:
+        if (
+            self.execution_backend.requires_piper_status
+            and self.end_pose.position.z < 0.22
+        ):
             raise RuntimeError(
                 f"当前末端高度过低: {self.end_pose.position.z:.3f} m"
             )
@@ -558,6 +591,25 @@ class FoamMoveToPregrasp(Node):
             rclpy.spin_once(self, timeout_sec=0.05)
 
     def ensure_command_path_is_exclusive(self):
+        return self.execution_backend.ensure_command_path_is_exclusive()
+
+    def prepare_command_publisher(self):
+        return self.execution_backend.prepare_execution()
+
+    def make_command(self, arm_positions, actual_gripper_m, speed_percent, effort):
+        return self.execution_backend.make_command(
+            arm_positions, actual_gripper_m, speed_percent, effort
+        )
+
+    def publish_hold(self, actual_gripper_m, speed_percent, effort):
+        return self.execution_backend.hold_position(
+            actual_gripper_m, speed_percent, effort
+        )
+
+    def execute_trajectory(self, *args, **kwargs):
+        return self.execution_backend.execute_arm_trajectory(*args, **kwargs)
+
+    def _real_ensure_command_path_is_exclusive(self):
         publishers = self.get_publishers_info_by_topic("/joint_states")
         if publishers:
             descriptions = ", ".join(
@@ -572,14 +624,6 @@ class FoamMoveToPregrasp(Node):
         )
         if not driver_found:
             raise RuntimeError("/joint_states没有Piper驱动订阅者")
-
-    def prepare_command_publisher(self):
-        self.command_publisher = self.create_publisher(
-            JointState,
-            "/joint_states",
-            10,
-        )
-        self.spin_for(1.0)
 
     @staticmethod
     def interpolate_trajectory(trajectory, target_time):
@@ -600,7 +644,7 @@ class FoamMoveToPregrasp(Node):
             )
         ]
 
-    def make_command(self, arm_positions, actual_gripper_m, speed_percent, effort):
+    def _real_make_command(self, arm_positions, actual_gripper_m, speed_percent, effort):
         message = JointState()
         message.header.stamp = self.get_clock().now().to_msg()
         message.name = list(COMMAND_NAMES)
@@ -611,7 +655,7 @@ class FoamMoveToPregrasp(Node):
         message.effort = [0.0] * 6 + [float(effort)]
         return message
 
-    def publish_hold(self, actual_gripper_m, speed_percent, effort):
+    def _real_publish_hold(self, actual_gripper_m, speed_percent, effort):
         if self.command_publisher is None or self.latest_joint_state is None:
             return
         current = self.current_positions()
@@ -623,10 +667,20 @@ class FoamMoveToPregrasp(Node):
         )
         for _ in range(5):
             message.header.stamp = self.get_clock().now().to_msg()
-            self.command_publisher.publish(message)
+            self.execution_backend.publish_message(message)
             rclpy.spin_once(self, timeout_sec=0.05)
 
-    def execute_trajectory(
+    def _real_send_servo_command(
+        self, arm_positions, gripper_opening, speed_percent, effort
+    ):
+        if self.command_publisher is None:
+            raise RuntimeError("真机执行后端尚未准备")
+        message = self._real_make_command(
+            arm_positions, gripper_opening, speed_percent, effort
+        )
+        self.execution_backend.publish_message(message)
+
+    def _real_execute_trajectory(
         self,
         motion_response,
         planned_start,
@@ -768,7 +822,7 @@ class FoamMoveToPregrasp(Node):
                     speed_percent,
                     effort,
                 )
-                self.command_publisher.publish(message)
+                self.execution_backend.publish_message(message)
                 last_command = commanded
                 rclpy.spin_once(self, timeout_sec=0.05)
 
@@ -814,7 +868,7 @@ class FoamMoveToPregrasp(Node):
             final_deadline = time.monotonic() + 3.0
             while rclpy.ok() and time.monotonic() < final_deadline:
                 final_message.header.stamp = self.get_clock().now().to_msg()
-                self.command_publisher.publish(final_message)
+                self.execution_backend.publish_message(final_message)
                 rclpy.spin_once(self, timeout_sec=0.05)
                 if time.monotonic() - self.latest_joint_received_at > 0.3:
                     raise RuntimeError("到达目标时关节反馈中断")
@@ -893,6 +947,12 @@ def parse_args():
     parser = argparse.ArgumentParser(
         description="只规划或执行当前位置到方块PREGRASP"
     )
+    parser.add_argument(
+        "--execution-backend",
+        choices=("real", "simulation"),
+        default="real",
+        help="最终执行通道；默认real，simulation使用ros2_control action",
+    )
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm", default="")
     parser.add_argument("--slowdown", type=float, default=2.0)
@@ -916,7 +976,7 @@ def parse_args():
 def main():
     args = parse_args()
     rclpy.init()
-    node = FoamMoveToPregrasp()
+    node = FoamMoveToPregrasp(execution_backend=args.execution_backend)
     try:
         node.wait_for_inputs()
         node.wait_for_services()

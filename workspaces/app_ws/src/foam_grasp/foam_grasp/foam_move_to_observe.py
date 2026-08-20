@@ -26,58 +26,61 @@ class FoamMoveToObserve(FoamMoveToPregrasp):
         deadline = time.monotonic() + timeout_sec
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.1)
-            if (
-                len(self.joint_samples) >= 10
-                and self.arm_status is not None
-                and self.end_pose is not None
-            ):
+            ready = len(self.joint_samples) >= 10
+            if self.execution_backend.requires_piper_status:
+                ready = ready and self.arm_status is not None and self.end_pose is not None
+            if ready:
                 return
-        raise RuntimeError("缺少Piper关节、状态或末端位姿反馈")
+        raise RuntimeError("缺少执行后端所需的关节或状态反馈")
 
     def validate_robot_state(self):
         now = time.monotonic()
-        for label, timestamp in (
-            ("关节反馈", self.latest_joint_received_at),
-            ("机械臂状态", self.arm_status_received_at),
-            ("末端位姿", self.end_pose_received_at),
-        ):
+        timestamps = [("关节反馈", self.latest_joint_received_at)]
+        if self.execution_backend.requires_piper_status:
+            timestamps.extend(
+                [
+                    ("机械臂状态", self.arm_status_received_at),
+                    ("末端位姿", self.end_pose_received_at),
+                ]
+            )
+        for label, timestamp in timestamps:
             if now - timestamp > 0.6:
                 raise RuntimeError(f"{label}已过期")
 
-        status = self.arm_status
-        if status.arm_status != 0 or status.err_code != 0:
-            raise RuntimeError(
-                f"机械臂异常: arm_status={status.arm_status}, "
-                f"err_code={status.err_code}"
+        if self.execution_backend.requires_piper_status:
+            status = self.arm_status
+            if status.arm_status != 0 or status.err_code != 0:
+                raise RuntimeError(
+                    f"机械臂异常: arm_status={status.arm_status}, "
+                    f"err_code={status.err_code}"
+                )
+            # Piper can keep motion_status=1 after an interrupted or
+            # superseded joint target even when the arm has physically
+            # stopped.  Accept that recoverable state after the stable check.
+            if status.motion_status not in (0, 1):
+                raise RuntimeError(
+                    f"机械臂运动状态异常: motion_status={status.motion_status}"
+                )
+            communication_errors = (
+                status.communication_status_joint_1,
+                status.communication_status_joint_2,
+                status.communication_status_joint_3,
+                status.communication_status_joint_4,
+                status.communication_status_joint_5,
+                status.communication_status_joint_6,
             )
-        # Piper can keep motion_status=1 after an interrupted or superseded
-        # joint target even when the arm has physically stopped.  Accept that
-        # recoverable state only after the stable-feedback check below.  All
-        # hardware errors, communication faults and limit flags still reject.
-        if status.motion_status not in (0, 1):
-            raise RuntimeError(
-                f"机械臂运动状态异常: motion_status={status.motion_status}"
+            if any(communication_errors):
+                raise RuntimeError("机械臂存在关节通信异常")
+            angle_limit_flags = (
+                status.joint_1_angle_limit,
+                status.joint_2_angle_limit,
+                status.joint_3_angle_limit,
+                status.joint_4_angle_limit,
+                status.joint_5_angle_limit,
+                status.joint_6_angle_limit,
             )
-        communication_errors = (
-            status.communication_status_joint_1,
-            status.communication_status_joint_2,
-            status.communication_status_joint_3,
-            status.communication_status_joint_4,
-            status.communication_status_joint_5,
-            status.communication_status_joint_6,
-        )
-        if any(communication_errors):
-            raise RuntimeError("机械臂存在关节通信异常")
-        angle_limit_flags = (
-            status.joint_1_angle_limit,
-            status.joint_2_angle_limit,
-            status.joint_3_angle_limit,
-            status.joint_4_angle_limit,
-            status.joint_5_angle_limit,
-            status.joint_6_angle_limit,
-        )
-        if any(angle_limit_flags):
-            raise RuntimeError("真机报告至少一个关节触发角度限位")
+            if any(angle_limit_flags):
+                raise RuntimeError("真机报告至少一个关节触发角度限位")
 
         samples = list(self.joint_samples)[-10:]
         maximum_spread = max(
@@ -89,7 +92,10 @@ class FoamMoveToObserve(FoamMoveToPregrasp):
             raise RuntimeError(
                 f"机械臂尚未静止，最大关节波动 {maximum_spread:.4f} rad"
             )
-        if status.motion_status == 1:
+        if (
+            self.execution_backend.requires_piper_status
+            and self.arm_status.motion_status == 1
+        ):
             self.get_logger().warning(
                 "motion_status=1但关节反馈已稳定；"
                 "将从当前真实关节位置重新规划观察姿态"
@@ -102,6 +108,12 @@ class FoamMoveToObserve(FoamMoveToPregrasp):
 
 def parse_args():
     parser = argparse.ArgumentParser(description="移动到固定相机观察姿态")
+    parser.add_argument(
+        "--execution-backend",
+        choices=("real", "simulation"),
+        default="real",
+        help="最终执行通道；默认real，simulation使用ros2_control action",
+    )
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm", default="")
     parser.add_argument(
@@ -135,7 +147,7 @@ def parse_args():
 def main():
     args = parse_args()
     rclpy.init()
-    node = FoamMoveToObserve()
+    node = FoamMoveToObserve(execution_backend=args.execution_backend)
     try:
         node.wait_for_robot_inputs()
         node.wait_for_services()
