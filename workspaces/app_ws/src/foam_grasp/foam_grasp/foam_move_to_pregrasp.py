@@ -83,6 +83,12 @@ class FoamMoveToPregrasp(Node):
             self.declare_parameter("execution_backend", execution_backend)
         selected_backend = self.get_parameter("execution_backend").value
         self.execution_backend = create_backend(self, selected_backend)
+        self.table_size = self._read_table_vector(
+            "table_size", TABLE_SIZE, strictly_positive=True
+        )
+        self.table_center = self._read_table_vector(
+            "table_pose", TABLE_CENTER, strictly_positive=False
+        )
 
         self.latest_joint_state = None
         self.latest_joint_received_at = 0.0
@@ -157,6 +163,17 @@ class FoamMoveToPregrasp(Node):
         if not self.has_parameter(name):
             self.declare_parameter(name, default)
         return self.get_parameter(name).value
+
+    def _read_table_vector(self, name, default, strictly_positive):
+        values = list(self.declare_or_get_parameter(name, list(default)))
+        if len(values) != 3:
+            raise RuntimeError(f"{name} must contain exactly three values")
+        vector = tuple(float(value) for value in values)
+        if not all(self.is_finite(value) for value in vector):
+            raise RuntimeError(f"{name} must contain finite values")
+        if strictly_positive and not all(value > 0.0 for value in vector):
+            raise RuntimeError(f"{name} dimensions must be positive")
+        return vector
 
     def joint_callback(self, message):
         values = self.execution_backend.normalize_joint_positions(message)
@@ -382,12 +399,12 @@ class FoamMoveToPregrasp(Node):
 
         primitive = SolidPrimitive()
         primitive.type = SolidPrimitive.BOX
-        primitive.dimensions = list(TABLE_SIZE)
+        primitive.dimensions = list(self.table_size)
 
         pose = Pose()
-        pose.position.x = TABLE_CENTER[0]
-        pose.position.y = TABLE_CENTER[1]
-        pose.position.z = TABLE_CENTER[2]
+        pose.position.x = self.table_center[0]
+        pose.position.y = self.table_center[1]
+        pose.position.z = self.table_center[2]
         pose.orientation.w = 1.0
         collision_object.primitives.append(primitive)
         collision_object.primitive_poses.append(pose)

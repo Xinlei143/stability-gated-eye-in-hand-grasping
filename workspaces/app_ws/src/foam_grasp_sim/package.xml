@@ -12,14 +12,18 @@
   <exec_depend>control_msgs</exec_depend>
   <exec_depend>foam_grasp</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>moveit_configs_utils</exec_depend>
   <exec_depend>moveit_ros_move_group</exec_depend>
   <exec_depend>piper_gazebo</exec_depend>
+  <exec_depend>piper_description</exec_depend>
+  <exec_depend>rclpy</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>trajectory_msgs</exec_depend>
+  <exec_depend>xacro</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>
