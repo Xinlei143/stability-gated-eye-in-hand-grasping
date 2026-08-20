@@ -46,3 +46,11 @@ pipeline:
     sphere_diameter: 0.060
     grasp_offset_x: 0.0
     grasp_offset_y: 0.0
+
+motion:
+  trajectory: static
+  velocity: [0.01, 0.00, 0.00]
+  move_duration: 4.0
+  stop_duration: 6.0
+  control_rate: 30.0
+  ground_truth_rate: 30.0
