@@ -60,7 +60,6 @@ class Ros2ControlBackend(ExecutionBackend):
         self.gripper_client = ActionClient(
             node, FollowJointTrajectory, self.gripper_action_name
         )
-        self._prepared = False
         self._active_goals = []
 
     def normalize_joint_positions(self, message):
@@ -89,9 +88,6 @@ class Ros2ControlBackend(ExecutionBackend):
     def prepare_execution(self):
         self.ensure_command_path_is_exclusive()
         self._prepared = True
-        # Existing CLI cancellation paths use this as an execution-started
-        # flag.  The simulation backend deliberately exposes no publisher.
-        self.node.command_publisher = self
 
     def make_command(self, arm_positions, actual_gripper_m, speed_percent, effort):
         del speed_percent, effort
@@ -232,61 +228,63 @@ class Ros2ControlBackend(ExecutionBackend):
             else self.gripper_action_name
         )
         self._wait_for_server(client, action_name)
-        goal = FollowJointTrajectory.Goal()
-        goal.trajectory = trajectory
+        self._begin_execution()
+        goal_handle = None
         start = time.monotonic()
-        goal_future = client.send_goal_async(goal)
-        goal_handle = self._spin_until(goal_future, self.action_timeout, label)
-        if not goal_handle.accepted:
-            raise RuntimeError(f"{label} goal rejected")
-        self._active_goals.append(goal_handle)
-        result_future = goal_handle.get_result_async()
         try:
+            goal = FollowJointTrajectory.Goal()
+            goal.trajectory = trajectory
+            goal_future = client.send_goal_async(goal)
+            goal_handle = self._spin_until(goal_future, self.action_timeout, label)
+            if not goal_handle.accepted:
+                raise RuntimeError(f"{label} goal rejected")
+            self._active_goals.append(goal_handle)
             wrapped = self._spin_until(
-                result_future,
+                goal_handle.get_result_async(),
                 max(self.action_timeout, self._trajectory_duration(trajectory) + 10.0),
                 label,
             )
+            result = wrapped.result
+            if int(result.error_code) != 0:
+                raise RuntimeError(
+                    f"{label} failed with FollowJointTrajectory error "
+                    f"{int(result.error_code)}"
+                )
+            final_error = self._final_error(trajectory)
+            tolerance = (
+                self.gripper_tolerance
+                if client is self.gripper_client
+                else self.final_tolerance
+            )
+            if final_error > tolerance:
+                raise RuntimeError(
+                    f"{label} final joint error {final_error:.4f} exceeds "
+                    f"{tolerance:.4f}"
+                )
+            return ExecutionResult(
+                duration_sec=time.monotonic() - start,
+                final_error=final_error,
+                maximum_tracking_error=final_error,
+                gripper_position=(
+                    self.node.current_positions()[6]
+                    if len(trajectory.joint_names) == 1
+                    else None
+                ),
+            )
         except RuntimeError:
-            try:
-                goal_handle.cancel_goal_async()
-            finally:
+            if goal_handle is not None:
+                try:
+                    goal_handle.cancel_goal_async()
+                except Exception:
+                    pass
+            raise
+        finally:
+            if goal_handle is not None:
                 try:
                     self._active_goals.remove(goal_handle)
                 except ValueError:
                     pass
-            raise
-        try:
-            self._active_goals.remove(goal_handle)
-        except ValueError:
-            pass
-        result = wrapped.result
-        if int(result.error_code) != 0:
-            raise RuntimeError(
-                f"{label} failed with FollowJointTrajectory error "
-                f"{int(result.error_code)}"
-            )
-        final_error = self._final_error(trajectory)
-        tolerance = (
-            self.gripper_tolerance
-            if client is self.gripper_client
-            else self.final_tolerance
-        )
-        if final_error > tolerance:
-            raise RuntimeError(
-                f"{label} final joint error {final_error:.4f} exceeds "
-                f"{tolerance:.4f}"
-            )
-        return ExecutionResult(
-            duration_sec=time.monotonic() - start,
-            final_error=final_error,
-            maximum_tracking_error=final_error,
-            gripper_position=(
-                self.node.current_positions()[6]
-                if len(trajectory.joint_names) == 1
-                else None
-            ),
-        )
+            self._end_execution()
 
     def _spin_until(self, future, timeout_sec, label):
         deadline = time.monotonic() + float(timeout_sec)
@@ -315,3 +313,13 @@ class Ros2ControlBackend(ExecutionBackend):
         if self.gripper_joint_name in positions:
             errors.append(abs(actual[6] - float(positions[self.gripper_joint_name])))
         return max(errors, default=0.0)
+
+    def close(self):
+        for goal_handle in list(self._active_goals):
+            try:
+                goal_handle.cancel_goal_async()
+            except Exception:
+                pass
+        self._active_goals.clear()
+        self._active = False
+        self._prepared = False

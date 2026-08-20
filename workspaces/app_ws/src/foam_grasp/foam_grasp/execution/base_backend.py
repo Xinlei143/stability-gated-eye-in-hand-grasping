@@ -33,6 +33,31 @@ class ExecutionBackend:
 
     def __init__(self, node):
         self.node = node
+        self._prepared = False
+        self._active = False
+
+    @property
+    def execution_prepared(self):
+        """Whether the command transport passed its preparation checks."""
+        return self._prepared
+
+    @property
+    def execution_active(self):
+        """Whether a command is currently being sent or awaited."""
+        return self._active
+
+    @property
+    def can_hold(self):
+        """Whether an emergency hold can be issued by this backend."""
+        return self._prepared
+
+    def _begin_execution(self):
+        if not self._prepared:
+            raise RuntimeError(f"{self.name} execution backend is not prepared")
+        self._active = True
+
+    def _end_execution(self):
+        self._active = False
 
     def normalize_joint_positions(self, message):
         """Return the canonical seven-position vector or ``None``.
