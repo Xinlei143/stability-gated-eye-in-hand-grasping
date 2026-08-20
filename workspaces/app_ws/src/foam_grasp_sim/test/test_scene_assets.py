@@ -42,14 +42,34 @@ class SceneAssetTest(unittest.TestCase):
             self.assertAlmostEqual(pose[2] - height / 2.0, tabletop)
             self.assertEqual(pose[:2], [0.40, 0.00])
 
-    def test_bringup_preserves_upstream_launch_and_planning_only_moveit(self):
-        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+    def test_piper_composition_owns_world_and_reuses_upstream_assets(self):
+        piper = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
         moveit = (PACKAGE_ROOT / "launch" / "sim_moveit.launch.py").read_text()
-        self.assertIn("piper_gazebo", bringup)
-        self.assertIn("piper_gazebo.launch.py", bringup)
+        self.assertIn("piper_description_gazebo.xacro", piper)
+        self.assertIn("piper_gazebo", piper)
+        self.assertIn("joint8_ctrl.py", piper)
+        self.assertIn("grasp_table.world", piper)
+        for controller in (
+            "joint_state_broadcaster",
+            "arm_controller",
+            "gripper_controller",
+            "gripper8_controller",
+        ):
+            self.assertIn(controller, piper)
         self.assertIn("allow_trajectory_execution", moveit)
         self.assertIn('"allow_trajectory_execution": False', moveit)
         self.assertNotIn("joint_states_single", moveit)
+
+    def test_table_model_matches_scene_config(self):
+        config = yaml.safe_load(
+            (PACKAGE_ROOT / "config" / "simulation.yaml").read_text()
+        )
+        root = ET.parse(PACKAGE_ROOT / "models" / "table" / "model.sdf").getroot()
+        model_size = [
+            float(value)
+            for value in root.findtext("model/link/collision/geometry/box/size").split()
+        ]
+        self.assertEqual(model_size, config["scene"]["table"]["size"])
 
     def test_all_static_scene_assets_are_valid_sdf(self):
         for path in sorted((PACKAGE_ROOT / "models").glob("*/model.sdf")):
@@ -66,14 +86,14 @@ class SceneAssetTest(unittest.TestCase):
                     model.find("link/collision/surface/friction"), path
                 )
 
-    def test_world_contains_static_table_and_gravity(self):
+    def test_world_contains_only_physics_and_gravity(self):
         root = ET.parse(PACKAGE_ROOT / "worlds" / "grasp_table.world").getroot()
         world = root.find("world")
         self.assertIsNotNone(world)
         self.assertEqual(world.findtext("gravity"), "0 0 -9.81")
-        table = world.find("model[@name='grasp_table']")
-        self.assertIsNotNone(table)
-        self.assertEqual(table.findtext("static"), "true")
+        self.assertEqual(world.findtext("physics/max_step_size"), "0.001")
+        self.assertEqual(world.findtext("physics/real_time_update_rate"), "1000")
+        self.assertIsNone(world.find("model[@name='grasp_table']"))
 
 
 if __name__ == "__main__":
