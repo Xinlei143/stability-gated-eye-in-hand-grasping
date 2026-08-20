@@ -1,0 +1,23 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="foam_sphere">
+    <static>false</static>
+    <link name="sphere_link">
+      <inertial>
+        <mass>0.08</mass>
+        <inertia>
+          <ixx>2.880e-5</ixx><iyy>2.880e-5</iyy><izz>2.880e-5</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <collision name="collision">
+        <geometry><sphere><radius>0.03</radius></sphere></geometry>
+        <surface><friction><ode><mu>0.80</mu><mu2>0.70</mu2></ode></friction></surface>
+      </collision>
+      <visual name="visual">
+        <geometry><sphere><radius>0.03</radius></sphere></geometry>
+        <material><ambient>0.18 0.70 0.28 1</ambient><diffuse>0.25 0.85 0.35 1</diffuse></material>
+      </visual>
+    </link>
+  </model>
+</sdf>

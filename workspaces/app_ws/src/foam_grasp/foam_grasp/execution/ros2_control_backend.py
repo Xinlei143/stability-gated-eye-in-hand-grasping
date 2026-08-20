@@ -4,6 +4,7 @@ import copy
 import time
 
 from control_msgs.action import FollowJointTrajectory
+from control_msgs.msg import JointTrajectoryControllerState
 from rclpy.action import ActionClient
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
@@ -54,29 +55,62 @@ class Ros2ControlBackend(ExecutionBackend):
         self.gripper_feedback_scale = float(
             node.declare_or_get_parameter("gripper_feedback_scale", 1.0)
         )
+        self.gripper_feedback_topic = str(
+            node.declare_or_get_parameter(
+                "gripper_feedback_topic",
+                "/gripper_controller/controller_state",
+            )
+        )
         self.arm_client = ActionClient(
             node, FollowJointTrajectory, self.arm_action_name
         )
         self.gripper_client = ActionClient(
             node, FollowJointTrajectory, self.gripper_action_name
         )
+        self._gripper_feedback_position = None
+        self._gripper_feedback_effort = None
+        self.gripper_feedback_subscription = node.create_subscription(
+            JointTrajectoryControllerState,
+            self.gripper_feedback_topic,
+            self._gripper_feedback_callback,
+            10,
+        )
         self._active_goals = []
+
+    def _gripper_feedback_callback(self, message):
+        try:
+            index = message.joint_names.index(self.gripper_joint_name)
+        except ValueError:
+            return
+        if index >= len(message.actual.positions):
+            return
+        position = float(message.actual.positions[index])
+        self._gripper_feedback_position = position * self.gripper_feedback_scale
+        if index < len(message.actual.effort):
+            self._gripper_feedback_effort = float(message.actual.effort[index])
 
     def normalize_joint_positions(self, message):
         positions = dict(zip(message.name, message.position))
+        gripper_from_message = "gripper" in positions
         # Gazebo/Piper revisions use either ``gripper`` or ``joint7`` for the
         # actuated jaw.  Normalize both at the backend boundary.
         if "gripper" not in positions and "joint7" in positions:
             positions["gripper"] = positions["joint7"]
+            gripper_from_message = True
         if "gripper" not in positions and "finger_joint" in positions:
             positions["gripper"] = positions["finger_joint"]
+            gripper_from_message = True
+        cached_gripper = getattr(self, "_gripper_feedback_position", None)
+        if "gripper" not in positions and cached_gripper is not None:
+            positions["gripper"] = cached_gripper
         required = list(self.node.arm_joint_names) + ["gripper"]
         if not all(name in positions for name in required):
             return None
         values = [float(positions[name]) for name in required]
         if not all(self.node.is_finite(value) for value in values):
             return None
-        values[6] *= getattr(self, "gripper_feedback_scale", 1.0)
+        if gripper_from_message:
+            values[6] *= getattr(self, "gripper_feedback_scale", 1.0)
         return values
 
     def ensure_command_path_is_exclusive(self):
@@ -176,6 +210,7 @@ class Ros2ControlBackend(ExecutionBackend):
                 previous.cancel_goal_async()
             except Exception:
                 pass
+            self._active = False
         self._wait_for_server(self.arm_client, self.arm_action_name)
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = self._single_point_trajectory(
@@ -185,6 +220,7 @@ class Ros2ControlBackend(ExecutionBackend):
         goal_handle = self._spin_until(future, self.action_timeout, "servo")
         if goal_handle.accepted:
             self._active_goals = [goal_handle]
+            self._active = True
         # The gripper is held by the controller and does not need a new goal
         # on every arm servo tick.
 
@@ -311,7 +347,14 @@ class Ros2ControlBackend(ExecutionBackend):
             if name in positions:
                 errors.append(abs(actual[index] - float(positions[name])))
         if self.gripper_joint_name in positions:
-            errors.append(abs(actual[6] - float(positions[self.gripper_joint_name])))
+            command_position = float(positions[self.gripper_joint_name])
+            command_scale = self.gripper_command_scale
+            if abs(command_scale) < 1e-9:
+                raise RuntimeError("gripper_command_scale must be non-zero")
+            feedback_position = command_position * (
+                self.gripper_feedback_scale / command_scale
+            )
+            errors.append(abs(actual[6] - feedback_position))
         return max(errors, default=0.0)
 
     def close(self):

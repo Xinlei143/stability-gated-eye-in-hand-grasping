@@ -5,6 +5,7 @@
     arm_trajectory_action: /arm_controller/follow_joint_trajectory
     gripper_trajectory_action: /gripper_controller/follow_joint_trajectory
     gripper_joint_name: joint7
+    gripper_feedback_topic: /gripper_controller/controller_state
     gripper_command_scale: 1.0
     gripper_feedback_scale: 1.0
     final_joint_tolerance: 0.05

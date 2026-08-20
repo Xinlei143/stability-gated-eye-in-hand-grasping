@@ -79,13 +79,15 @@ class PiperRealBackend(ExecutionBackend):
     def send_servo_command(
         self, arm_positions, gripper_opening, speed_percent, effort
     ):
-        if not self.can_hold:
-            raise RuntimeError("真机执行后端尚未准备")
-        self.publish_message(
-            self.make_command(
-                arm_positions, gripper_opening, speed_percent, effort
+        self._begin_execution()
+        try:
+            self.publish_message(
+                self.make_command(
+                    arm_positions, gripper_opening, speed_percent, effort
+                )
             )
-        )
+        finally:
+            self._end_execution()
 
     @staticmethod
     def _interpolate_trajectory(trajectory, target_time):

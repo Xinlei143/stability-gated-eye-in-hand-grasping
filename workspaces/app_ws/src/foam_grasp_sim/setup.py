@@ -18,6 +18,13 @@ setup(
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
         ("share/" + package_name + "/worlds", glob("worlds/*")),
+        ("share/" + package_name + "/models/table", ["models/table/model.sdf"]),
+        ("share/" + package_name + "/models/cube", ["models/cube/model.sdf"]),
+        (
+            "share/" + package_name + "/models/cylinder",
+            ["models/cylinder/model.sdf"],
+        ),
+        ("share/" + package_name + "/models/sphere", ["models/sphere/model.sdf"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
