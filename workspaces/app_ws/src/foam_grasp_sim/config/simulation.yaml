@@ -54,3 +54,15 @@ motion:
   stop_duration: 6.0
   control_rate: 30.0
   ground_truth_rate: 30.0
+  seed: 42
+
+perception:
+  source: ground_truth
+  sampling_rate: 10.0
+  latency_ms: 100.0
+  noise_std_mm: 5.0
+  dropout_probability: 0.10
+  outlier_probability: 0.01
+  outlier_range_mm: 50.0
+  history_duration: 10.0
+  seed: 42

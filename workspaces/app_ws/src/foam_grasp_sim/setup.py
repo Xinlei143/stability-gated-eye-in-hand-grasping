@@ -37,6 +37,8 @@ setup(
             "static_target_source_node = "
             "foam_grasp_sim.static_target_source_node:main",
             "target_motion_node = foam_grasp_sim.target_motion_node:main",
+            "simulated_perception_node = "
+            "foam_grasp_sim.simulated_perception_node:main",
         ],
     },
 )

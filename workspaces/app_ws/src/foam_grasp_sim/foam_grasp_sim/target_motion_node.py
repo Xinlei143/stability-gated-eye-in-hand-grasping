@@ -29,11 +29,14 @@ class TargetMotionNode(Node):
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("start_position", [0.40, 0.00, 0.026])
         self.declare_parameter("trajectory", "static")
-        self.declare_parameter("velocity", [0.01, 0.00, 0.00])
+        self.declare_parameter("velocity_x", 0.01)
+        self.declare_parameter("velocity_y", 0.00)
+        self.declare_parameter("velocity_z", 0.00)
         self.declare_parameter("move_duration", 4.0)
         self.declare_parameter("stop_duration", 6.0)
         self.declare_parameter("control_rate", 30.0)
         self.declare_parameter("ground_truth_rate", 30.0)
+        self.declare_parameter("seed", 42)
         self.declare_parameter("model_states_topic", "/gazebo/model_states")
         self.declare_parameter("set_entity_state_service", "/gazebo/set_entity_state")
 
@@ -56,7 +59,11 @@ class TargetMotionNode(Node):
             ) = validate_motion_parameters(
                 self.trajectory,
                 self.get_parameter("start_position").value,
-                self.get_parameter("velocity").value,
+                [
+                    self.get_parameter("velocity_x").value,
+                    self.get_parameter("velocity_y").value,
+                    self.get_parameter("velocity_z").value,
+                ],
                 self.get_parameter("move_duration").value,
                 self.get_parameter("stop_duration").value,
             )
@@ -64,6 +71,9 @@ class TargetMotionNode(Node):
             raise RuntimeError(str(error)) from error
         self.control_rate = self._positive_rate("control_rate")
         self.ground_truth_rate = self._positive_rate("ground_truth_rate")
+        self.seed = int(self.get_parameter("seed").value)
+        if not 0 <= self.seed <= 2**31 - 1:
+            raise RuntimeError("seed must be within [0, 2147483647]")
 
         self.actual_position = None
         self.trajectory_started_at = None
@@ -97,8 +107,8 @@ class TargetMotionNode(Node):
             self.publish_ground_truth,
         )
         self.get_logger().info(
-            "Target motion: entity=%s, trajectory=%s, velocity=(%.3f, %.3f, %.3f)"
-            % (self.entity_name, self.trajectory, *self.velocity)
+            "Target motion: entity=%s, trajectory=%s, velocity=(%.3f, %.3f, %.3f), seed=%d"
+            % (self.entity_name, self.trajectory, *self.velocity, self.seed)
         )
 
     def _positive_rate(self, name):
