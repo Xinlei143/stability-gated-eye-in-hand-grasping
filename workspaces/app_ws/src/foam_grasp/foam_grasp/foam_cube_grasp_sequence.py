@@ -872,91 +872,6 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             *args, **kwargs
         )
 
-    def _real_execute_untimed_cartesian(
-        self,
-        name,
-        trajectory,
-        gripper_target_m,
-        max_joint_rate,
-        speed_percent,
-        effort,
-        tracking_limit,
-    ):
-        actual_start = self.current_positions()[:6]
-        first = list(trajectory.points[0].positions)
-        start_error = max(abs(a - b) for a, b in zip(actual_start, first))
-        if start_error > 0.05:
-            raise RuntimeError(
-                f"{name}起点与真机相差 {start_error:.4f}rad"
-            )
-
-        previous = actual_start
-        total_duration = 0.0
-        try:
-            for point in trajectory.points[1:]:
-                target = [float(value) for value in point.positions]
-                maximum_delta = max(abs(a - b) for a, b in zip(target, previous))
-                segment_duration = max(0.20, maximum_delta / max_joint_rate)
-                segment_start = time.monotonic()
-                while rclpy.ok():
-                    elapsed = time.monotonic() - segment_start
-                    ratio = min(1.0, elapsed / segment_duration)
-                    commanded = [
-                        start + ratio * (end - start)
-                        for start, end in zip(previous, target)
-                    ]
-                    message = self.make_command(
-                        commanded,
-                        gripper_target_m,
-                        speed_percent,
-                        effort,
-                    )
-                    self.execution_backend.publish_message(message)
-                    rclpy.spin_once(self, timeout_sec=0.05)
-                    if time.monotonic() - self.latest_joint_received_at > 0.3:
-                        raise RuntimeError(f"{name}执行期间反馈中断")
-                    if self.arm_status.arm_status != 0 or self.arm_status.err_code != 0:
-                        raise RuntimeError(f"{name}执行期间状态异常")
-                    actual = self.current_positions()[:6]
-                    error = max(
-                        abs(a - b) for a, b in zip(actual, commanded)
-                    )
-                    if error > tracking_limit:
-                        raise RuntimeError(
-                            f"{name}跟踪误差过大: {error:.4f}rad"
-                        )
-                    if ratio >= 1.0:
-                        break
-                total_duration += segment_duration
-                previous = target
-        except Exception:
-            self.publish_hold(gripper_target_m, speed_percent, effort)
-            raise
-
-        final_deadline = time.monotonic() + 1.0
-        final_target = list(trajectory.points[-1].positions)
-        while rclpy.ok() and time.monotonic() < final_deadline:
-            self.execution_backend.publish_message(
-                self.make_command(
-                    final_target,
-                    gripper_target_m,
-                    speed_percent,
-                    effort,
-                )
-            )
-            rclpy.spin_once(self, timeout_sec=0.05)
-        final_error = max(
-            abs(a - b)
-            for a, b in zip(self.current_positions()[:6], final_target)
-        )
-        if final_error > 0.05:
-            self.publish_hold(gripper_target_m, speed_percent, effort)
-            raise RuntimeError(f"{name}最终误差过大: {final_error:.4f}rad")
-        print(
-            f"{name}完成：约{total_duration:.2f}s，"
-            f"最终最大关节误差{final_error:.4f}rad"
-        )
-
     def operator_gate(self, prompt, token, gripper_target_m, args):
         print("\n" + prompt)
         if args.auto:
@@ -1060,37 +975,6 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
     def command_gripper(self, target_actual_m, args):
         return self.execution_backend.command_gripper(target_actual_m, args)
 
-    def _real_command_gripper(self, target_actual_m, args):
-        arm_hold = self.current_positions()[:6]
-        deadline = time.monotonic() + 1.0
-        while rclpy.ok() and time.monotonic() < deadline:
-            self.execution_backend.publish_message(
-                self.make_command(
-                    arm_hold,
-                    target_actual_m,
-                    args.speed_percent,
-                    args.effort,
-                )
-            )
-            rclpy.spin_once(self, timeout_sec=0.05)
-            arm_error = max(
-                abs(a - b)
-                for a, b in zip(self.current_positions()[:6], arm_hold)
-            )
-            if arm_error > 0.05:
-                self.publish_hold(target_actual_m, args.speed_percent, args.effort)
-                raise RuntimeError(
-                    f"夹爪闭合期间机械臂偏移 {arm_error:.4f}rad"
-                )
-        self.spin_for(2.0)
-        feedback = self.current_positions()[6]
-        effort_feedback = None
-        if len(self.latest_joint_state.effort) >= 7:
-            effort_feedback = float(self.latest_joint_state.effort[6])
-        print(f"夹爪动作后实际开口：{feedback * 1000.0:.1f} mm")
-        if effort_feedback is not None:
-            print(f"夹爪反馈力度：{effort_feedback:.3f}")
-        return feedback
 
 
 def parse_args():
@@ -1494,13 +1378,13 @@ def main():
         print("机械臂保持LIFT姿态和夹爪闭合目标；没有失能、复位或回零。")
         return 0
     except KeyboardInterrupt:
-        if node.command_publisher is not None and node.latest_joint_state is not None:
+        if node.execution_backend.can_hold and node.latest_joint_state is not None:
             current = node.current_positions()
             node.publish_hold(current[6], args.speed_percent, args.effort)
         print("已取消并尝试保持当前位置；异常时使用硬件急停。")
         return 130
     except Exception as error:
-        if node.command_publisher is not None and node.latest_joint_state is not None:
+        if node.execution_backend.can_hold and node.latest_joint_state is not None:
             current = node.current_positions()
             node.publish_hold(current[6], args.speed_percent, args.effort)
         print(f"安全拒绝/中止：{error}", file=sys.stderr)

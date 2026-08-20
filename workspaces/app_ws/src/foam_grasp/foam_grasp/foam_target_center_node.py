@@ -2980,7 +2980,7 @@ def main():
     except KeyboardInterrupt:
         if (
             rclpy.ok()
-            and node.command_publisher is not None
+            and node.execution_backend.can_hold
             and node.latest_joint_state is not None
         ):
             current = node.current_positions()
@@ -3000,7 +3000,7 @@ def main():
     except Exception as error:
         if (
             rclpy.ok()
-            and node.command_publisher is not None
+            and node.execution_backend.can_hold
             and node.latest_joint_state is not None
         ):
             current = node.current_positions()

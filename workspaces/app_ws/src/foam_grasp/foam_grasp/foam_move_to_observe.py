@@ -229,13 +229,13 @@ def main():
         print("保持当前夹爪开口；未下降、闭合、复位、回零或失能。")
         return 0
     except KeyboardInterrupt:
-        if node.command_publisher is not None and node.latest_joint_state is not None:
+        if node.execution_backend.can_hold and node.latest_joint_state is not None:
             current = node.current_positions()
             node.publish_hold(current[6], args.speed_percent, args.effort)
         print("已取消并尝试保持当前位置；异常时使用硬件急停。")
         return 130
     except Exception as error:
-        if node.command_publisher is not None and node.latest_joint_state is not None:
+        if node.execution_backend.can_hold and node.latest_joint_state is not None:
             current = node.current_positions()
             node.publish_hold(current[6], args.speed_percent, args.effort)
         print(f"安全拒绝/中止：{error}", file=sys.stderr)

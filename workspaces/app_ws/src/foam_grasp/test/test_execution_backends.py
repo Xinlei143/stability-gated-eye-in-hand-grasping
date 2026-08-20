@@ -1,4 +1,5 @@
 import math
+from pathlib import Path
 import types
 import unittest
 
@@ -63,6 +64,21 @@ class ExecutionBackendTest(unittest.TestCase):
         self.assertEqual(trajectory.joint_names, ["joint1"])
         self.assertAlmostEqual(trajectory.points[0].positions[0], 0.25)
         self.assertEqual(trajectory.points[0].time_from_start.nanosec, 150000000)
+
+    def test_simulation_backend_does_not_use_node_publisher_hack(self):
+        backend = object.__new__(Ros2ControlBackend)
+        backend.node = FakeNode()
+        backend._prepared = False
+        backend._active = False
+        self.assertFalse(backend.execution_prepared)
+        self.assertFalse(hasattr(backend.node, "command_publisher"))
+
+    def test_vendor_execution_methods_live_in_real_backend(self):
+        source_root = Path(__file__).parents[1] / "foam_grasp"
+        pregrasp_source = (source_root / "foam_move_to_pregrasp.py").read_text()
+        sequence_source = (source_root / "foam_cube_grasp_sequence.py").read_text()
+        self.assertNotIn("def _real_", pregrasp_source)
+        self.assertNotIn("def _real_", sequence_source)
 
 
 if __name__ == "__main__":
