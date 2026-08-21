@@ -39,6 +39,8 @@ setup(
             "target_motion_node = foam_grasp_sim.target_motion_node:main",
             "simulated_perception_node = "
             "foam_grasp_sim.simulated_perception_node:main",
+            "method_policy_node = "
+            "foam_grasp_sim.method_policy_node:main",
         ],
     },
 )

@@ -9,7 +9,6 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
-    OpaqueFunction,
     TimerAction,
 )
 from launch.conditions import IfCondition
@@ -31,6 +30,7 @@ def _load_simulation_config(package_share):
         targets = config["scene"]["targets"]
         execution = config["execution"]
         pipeline = config["pipeline"]
+        method = config["method"]
         motion = config["motion"]
         perception = config["perception"]
     except (KeyError, TypeError) as error:
@@ -47,7 +47,7 @@ def _load_simulation_config(package_share):
             )
     if len(motion["velocity"]) != 3:
         raise RuntimeError("motion.velocity must contain three values")
-    return table, targets, execution, pipeline, motion, perception
+    return table, targets, execution, pipeline, method, motion, perception
 
 
 def _scene_spawn(package_share, model, entity, pose, condition=None):
@@ -83,20 +83,9 @@ def _parameter(name, value_type):
     return ParameterValue(LaunchConfiguration(name), value_type=value_type)
 
 
-def _require_static_for_execution(context, *_args, **_kwargs):
-    execute_motion = LaunchConfiguration("execute_motion").perform(context)
-    trajectory = LaunchConfiguration("trajectory").perform(context)
-    if execute_motion.strip().lower() == "true" and trajectory != "static":
-        raise RuntimeError(
-            "execute_motion:=true requires trajectory:=static in stage 3; "
-            "dynamic target grasping belongs to the stage-4 method layer"
-        )
-    return []
-
-
 def generate_launch_description():
     package_share = get_package_share_directory("foam_grasp_sim")
-    table, targets, execution, pipeline, motion, perception = _load_simulation_config(
+    table, targets, execution, pipeline, method_config, motion, perception = _load_simulation_config(
         package_share
     )
     use_rviz = LaunchConfiguration("use_rviz")
@@ -105,6 +94,7 @@ def generate_launch_description():
     execute_motion = LaunchConfiguration("execute_motion")
     trajectory = LaunchConfiguration("trajectory")
     perception_source = LaunchConfiguration("perception_source")
+    method = LaunchConfiguration("method")
 
     piper_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -195,7 +185,39 @@ def generate_launch_description():
         ),
     )
 
-    latch_parameters = {"use_sim_time": execution["use_sim_time"]}
+    method_policy = Node(
+        package="foam_grasp_sim",
+        executable="method_policy_node",
+        name="foam_method_policy",
+        output="screen",
+        parameters=[
+            {
+                "use_sim_time": execution["use_sim_time"],
+                "target_model": target_model,
+                "base_frame": pipeline["target_latch"]["base_frame"],
+                "method": method,
+                "stability_duration": _parameter("stability_duration", float),
+                "position_spread_threshold": _parameter(
+                    "position_spread_threshold", float
+                ),
+                "center_error_threshold": _parameter(
+                    "center_error_threshold", float
+                ),
+                "joint_error_threshold": _parameter(
+                    "joint_error_threshold", float
+                ),
+                "minimum_stable_samples": _parameter(
+                    "minimum_stable_samples", int
+                ),
+                "observation_timeout": _parameter("observation_timeout", float),
+            }
+        ],
+    )
+
+    latch_parameters = {
+        "use_sim_time": execution["use_sim_time"],
+        "method": method,
+    }
     latch_parameters.update(pipeline["target_latch"])
     target_latch = Node(
         package="foam_grasp",
@@ -203,6 +225,13 @@ def generate_launch_description():
         name="foam_target_latch",
         output="screen",
         parameters=[latch_parameters],
+        remappings=[
+            (
+                f"/foam_grasp/{name}_point_base",
+                f"/foam_grasp/{name}_method_point_base",
+            )
+            for name in TARGET_MODELS
+        ],
         condition=IfCondition(run_grasp_pipeline),
     )
     pose_parameters = {"use_sim_time": execution["use_sim_time"]}
@@ -221,6 +250,8 @@ def generate_launch_description():
         {
             "table_size": table["size"],
             "table_pose": table["pose"],
+            "wait_for_method_ready": True,
+            "method_ready_timeout": 60.0,
         }
     )
     sequence_arguments = [
@@ -287,6 +318,7 @@ def generate_launch_description():
             *target_spawns,
             *motion_nodes,
             simulated_perception,
+            method_policy,
         ],
     )
     sequence = TimerAction(period=10.0, actions=[plan_sequence, execute_sequence])
@@ -307,7 +339,36 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "execute_motion",
                 default_value="false",
-                description="Drive controllers only for trajectory:=static",
+                description="Execute the selected method after readiness",
+            ),
+            DeclareLaunchArgument(
+                "method",
+                default_value=str(method_config["name"]),
+                description="snapshot, tracking, or gated",
+            ),
+            DeclareLaunchArgument(
+                "stability_duration",
+                default_value=str(method_config["stability_duration"]),
+            ),
+            DeclareLaunchArgument(
+                "position_spread_threshold",
+                default_value=str(method_config["position_spread_threshold"]),
+            ),
+            DeclareLaunchArgument(
+                "center_error_threshold",
+                default_value=str(method_config["center_error_threshold"]),
+            ),
+            DeclareLaunchArgument(
+                "joint_error_threshold",
+                default_value=str(method_config["joint_error_threshold"]),
+            ),
+            DeclareLaunchArgument(
+                "minimum_stable_samples",
+                default_value=str(method_config["minimum_stable_samples"]),
+            ),
+            DeclareLaunchArgument(
+                "observation_timeout",
+                default_value=str(method_config["observation_timeout"]),
             ),
             DeclareLaunchArgument(
                 "trajectory",
@@ -367,7 +428,6 @@ def generate_launch_description():
                 default_value=str(perception["history_duration"]),
             ),
             DeclareLaunchArgument("seed", default_value=str(perception["seed"])),
-            OpaqueFunction(function=_require_static_for_execution),
             piper_launch,
             moveit_launch,
             target_latch,
