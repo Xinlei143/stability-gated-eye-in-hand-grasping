@@ -21,6 +21,8 @@ import rclpy
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import DisplayTrajectory, MoveItErrorCodes, RobotState
 from moveit_msgs.srv import GetCartesianPath, GetPositionIK
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
 from foam_grasp.foam_move_to_pregrasp import (
@@ -71,6 +73,20 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         self.grasp_received_at = 0.0
         self.lift_pose = None
         self.lift_received_at = 0.0
+        self.declare_parameter("wait_for_method_ready", False)
+        self.declare_parameter("method_ready_topic", "/foam_grasp/method_ready")
+        self.declare_parameter("method_ready_timeout", 60.0)
+        self.method_ready = False
+        self.method_ready_subscription = self.create_subscription(
+            Bool,
+            str(self.get_parameter("method_ready_topic").value),
+            self.method_ready_callback,
+            QoSProfile(
+                depth=1,
+                reliability=ReliabilityPolicy.RELIABLE,
+                durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
 
         self.grasp_subscription = self.create_subscription(
             PoseStamped,
@@ -135,6 +151,23 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             return
         self.lift_pose = copy.deepcopy(message)
         self.lift_received_at = time.monotonic()
+
+    def method_ready_callback(self, message):
+        self.method_ready = bool(message.data)
+
+    def wait_for_method_ready(self):
+        if not bool(self.get_parameter("wait_for_method_ready").value):
+            return
+        timeout = float(self.get_parameter("method_ready_timeout").value)
+        if not math.isfinite(timeout) or timeout <= 0.0:
+            raise RuntimeError("method_ready_timeout must be positive and finite")
+        deadline = time.monotonic() + timeout
+        while rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+            if self.method_ready:
+                print("方法层已READY，开始锁定执行目标。")
+                return
+        raise RuntimeError(f"方法层在{timeout:.1f}s内未达到READY")
 
     def wait_for_sequence_inputs(self):
         self.wait_for_inputs(timeout_sec=8.0)
@@ -1079,6 +1112,7 @@ def main():
     try:
         if args.auto_latch:
             node.wait_for_basic_inputs()
+            node.wait_for_method_ready()
             node.auto_latch_target()
         node.wait_for_sequence_inputs()
         node.wait_for_sequence_services()

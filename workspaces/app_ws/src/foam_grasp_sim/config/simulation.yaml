@@ -47,6 +47,15 @@ pipeline:
     grasp_offset_x: 0.0
     grasp_offset_y: 0.0
 
+method:
+  name: gated
+  stability_duration: 5.0
+  position_spread_threshold: 0.006
+  center_error_threshold: 30.0
+  joint_error_threshold: 0.030
+  minimum_stable_samples: 25
+  observation_timeout: 1.0
+
 motion:
   trajectory: static
   velocity: [0.01, 0.00, 0.00]
