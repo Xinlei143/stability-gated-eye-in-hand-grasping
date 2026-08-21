@@ -52,6 +52,16 @@ class SceneAssetTest(unittest.TestCase):
         self.assertEqual(config["perception"]["source"], "ground_truth")
         self.assertEqual(config["perception"]["seed"], 42)
 
+    def test_stage4_method_defaults_preserve_gated_behavior(self):
+        config = yaml.safe_load(
+            (PACKAGE_ROOT / "config" / "simulation.yaml").read_text()
+        )
+        method = config["method"]
+        self.assertEqual(method["name"], "gated")
+        self.assertEqual(method["stability_duration"], 5.0)
+        self.assertEqual(method["position_spread_threshold"], 0.006)
+        self.assertEqual(method["minimum_stable_samples"], 25)
+
     def test_piper_composition_owns_world_and_reuses_upstream_assets(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         piper = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
@@ -127,7 +137,45 @@ class SceneAssetTest(unittest.TestCase):
             self.assertIn(value, bringup)
         self.assertNotIn("start_executor", bringup)
         self.assertNotIn('executable="executor"', bringup)
-        self.assertIn("requires trajectory:=static", bringup)
+
+    def test_stage4_method_layer_is_wired_before_latch_and_execution(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        setup = (PACKAGE_ROOT / "setup.py").read_text()
+        sequence = (
+            Path(__file__).parents[2]
+            / "foam_grasp"
+            / "foam_grasp"
+            / "foam_cube_grasp_sequence.py"
+        ).read_text()
+        for method in ("snapshot", "tracking", "gated"):
+            self.assertIn(method, bringup)
+        for parameter in (
+            "stability_duration",
+            "position_spread_threshold",
+            "center_error_threshold",
+            "joint_error_threshold",
+            "minimum_stable_samples",
+            "method_ready",
+        ):
+            self.assertIn(parameter, bringup)
+        self.assertIn("method_policy_node", setup)
+        self.assertIn("wait_for_method_ready", sequence)
+        latch = (
+            Path(__file__).parents[2]
+            / "foam_grasp"
+            / "foam_grasp"
+            / "foam_target_latch_node.py"
+        ).read_text()
+        self.assertIn('self.method == "tracking"', latch)
+        self.assertIn("points[-1]", latch)
+        self.assertNotIn("requires trajectory:=static", bringup)
+
+    def test_python_nodes_install_into_ros2_lib_directory(self):
+        setup_cfg = PACKAGE_ROOT / "setup.cfg"
+        self.assertTrue(setup_cfg.exists())
+        content = setup_cfg.read_text()
+        self.assertIn("script_dir=$base/lib/foam_grasp_sim", content)
+        self.assertIn("install_scripts=$base/lib/foam_grasp_sim", content)
 
     def test_static_source_uses_selected_base_frame_topic(self):
         source = (
