@@ -58,6 +58,7 @@ __pycache__/
 .DS_Store
 ._*
 Log/
+results/
 docs/Gazebo_test.md
 build
 install

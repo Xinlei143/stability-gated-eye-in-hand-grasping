@@ -25,6 +25,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
+from foam_grasp.benchmark_events import BenchmarkEventPublisher
 from foam_grasp.foam_move_to_pregrasp import (
     ARM_JOINTS,
     FoamMoveToPregrasp,
@@ -76,6 +77,15 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         self.declare_parameter("wait_for_method_ready", False)
         self.declare_parameter("method_ready_topic", "/foam_grasp/method_ready")
         self.declare_parameter("method_ready_timeout", 60.0)
+        self.declare_parameter("method", "gated")
+        self.declare_parameter("commit_method_service", "/foam_grasp/commit_method_target")
+        self.declare_parameter("tracking_commit_timeout", 30.0)
+        self.declare_parameter("tracking_replan_threshold", 0.010)
+        self.declare_parameter("tracking_commit_tolerance", 0.005)
+        self.declare_parameter("tracking_max_updates", 20)
+        self.declare_parameter("observation_timeout", 1.0)
+        self.declare_parameter("scenario", "static")
+        self.declare_parameter("seed", 42)
         self.method_ready = False
         self.method_ready_subscription = self.create_subscription(
             Bool,
@@ -112,6 +122,15 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             Trigger,
             f"/foam_grasp/latch_{self.target_class}",
         )
+        self.commit_method_client = self.create_client(
+            Trigger, str(self.get_parameter("commit_method_service").value)
+        )
+        self.method_name = str(self.get_parameter("method").value)
+        if self.method_name not in ("snapshot", "tracking", "gated"):
+            raise RuntimeError("method must be snapshot, tracking, or gated")
+        self.scenario = str(self.get_parameter("scenario").value)
+        self.seed = int(self.get_parameter("seed").value)
+        self.event_publisher = BenchmarkEventPublisher(self)
         self.declare_parameter("tool_offset", 0.1358)
         self.tool_offset = float(self.get_parameter("tool_offset").value)
         if not 0.080 <= self.tool_offset <= 0.200:
@@ -189,55 +208,179 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                 return
         raise RuntimeError("缺少执行后端所需的关节或状态反馈")
 
-    def auto_latch_target(self):
-        self.candidate_locked = False
-        if not self.clear_latch_client.wait_for_service(timeout_sec=5.0):
-            raise RuntimeError("服务不可用: /foam_grasp/clear_latched_target")
-        latch_service = f"/foam_grasp/latch_{self.target_class}"
-        if not self.latch_target_client.wait_for_service(timeout_sec=5.0):
-            raise RuntimeError(f"服务不可用: {latch_service}")
-
-        clear_response = self.call_service(
-            self.clear_latch_client,
-            Trigger.Request(),
-            5.0,
+    def emit_event(self, name, *, details=None):
+        self.event_publisher.publish(
+            name,
+            method=self.method_name,
+            scenario=self.scenario,
+            seed=self.seed,
+            details=details,
         )
-        if not clear_response.success:
-            raise RuntimeError(
-                "清除旧锁定目标失败: " + clear_response.message
-            )
-        print(f"已清除旧目标，采集新的稳定{self.target_class}样本……")
-        self.spin_for(2.0)
 
-        last_message = ""
-        for attempt in range(1, 4):
+    def auto_latch_target(self):
+        """Commit the method node's ready target (legacy CLI name retained)."""
+
+        self.candidate_locked = False
+        service_name = str(self.get_parameter("commit_method_service").value)
+        if self.commit_method_client.wait_for_service(timeout_sec=1.0):
             response = self.call_service(
-                self.latch_target_client,
+                self.commit_method_client,
                 Trigger.Request(),
                 5.0,
             )
-            last_message = response.message
-            if response.success:
-                print("自动锁定成功：" + response.message)
-                # Discard any pose messages that belonged to the target which
-                # was active before clear_latched_target. The publishers run
-                # continuously, so fresh poses for the new latch arrive next.
-                self.pregrasp_pose = None
-                self.pregrasp_received_at = 0.0
-                self.grasp_pose = None
-                self.grasp_received_at = 0.0
-                self.lift_pose = None
-                self.lift_received_at = 0.0
-                self.latched_class = None
-                self.latched_class_received_at = 0.0
-                self.spin_for(0.5)
-                return
-            print(
-                f"自动锁定第{attempt}次未通过：{response.message}"
+            if not response.success:
+                raise RuntimeError("提交方法目标失败: " + response.message)
+            print("方法目标已提交：" + response.message)
+        else:
+            # Keep the real-camera workflow compatible while the simulation
+            # uses the method-policy commit service above.
+            if not self.clear_latch_client.wait_for_service(timeout_sec=5.0):
+                raise RuntimeError(f"服务不可用: {service_name}")
+            latch_service = f"/foam_grasp/latch_{self.target_class}"
+            if not self.latch_target_client.wait_for_service(timeout_sec=5.0):
+                raise RuntimeError(f"服务不可用: {latch_service}")
+            clear_response = self.call_service(
+                self.clear_latch_client, Trigger.Request(), 5.0
             )
-            self.spin_for(1.0)
+            if not clear_response.success:
+                raise RuntimeError("清除旧锁定目标失败: " + clear_response.message)
+            self.spin_for(2.0)
+            response = self.call_service(
+                self.latch_target_client, Trigger.Request(), 5.0
+            )
+            if not response.success:
+                raise RuntimeError("兼容锁定失败: " + response.message)
+            print("兼容锁定成功：" + response.message)
+        self.pregrasp_pose = None
+        self.pregrasp_received_at = 0.0
+        self.grasp_pose = None
+        self.grasp_received_at = 0.0
+        self.lift_pose = None
+        self.lift_received_at = 0.0
+        self.spin_for(0.5)
+
+    @staticmethod
+    def pose_distance(first, second):
+        if first is None or second is None:
+            return math.inf
+        a = first.pose.position
+        b = second.pose.position
+        return math.sqrt(
+            (float(a.x) - float(b.x)) ** 2
+            + (float(a.y) - float(b.y)) ** 2
+            + (float(a.z) - float(b.z)) ** 2
+        )
+
+    def latest_pose_age(self):
+        if self.pregrasp_pose is None or self.pregrasp_received_at <= 0.0:
+            return math.inf
+        return max(0.0, time.monotonic() - self.pregrasp_received_at)
+
+    def follow_tracking_target(self, *, execute=False, args=None):
+        """Follow live PREGRASP with bounded receding-horizon replanning."""
+
+        timeout = float(self.get_parameter("tracking_commit_timeout").value)
+        replan_threshold = float(self.get_parameter("tracking_replan_threshold").value)
+        commit_tolerance = float(self.get_parameter("tracking_commit_tolerance").value)
+        max_updates = int(self.get_parameter("tracking_max_updates").value)
+        observation_timeout = float(self.get_parameter("observation_timeout").value)
+        if not math.isfinite(timeout) or timeout <= 0.0:
+            raise RuntimeError("tracking_commit_timeout must be positive")
+        if not 0.001 <= replan_threshold <= 0.100:
+            raise RuntimeError("tracking_replan_threshold must be within 1--100mm")
+        if not 0.001 <= commit_tolerance <= replan_threshold:
+            raise RuntimeError("tracking_commit_tolerance must be <= replan threshold")
+        if not 1 <= max_updates <= 100:
+            raise RuntimeError("tracking_max_updates must be within 1--100")
+        if not math.isfinite(observation_timeout) or observation_timeout <= 0.0:
+            raise RuntimeError("observation_timeout must be positive")
+
+        planned_pose = None
+        planned_joints = None
+        updates = 0
+        deadline = time.monotonic() + timeout
+        if execute:
+            self.ensure_command_path_is_exclusive()
+            self.prepare_command_publisher()
+        while rclpy.ok() and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.05)
+            pose = copy.deepcopy(self.pregrasp_pose)
+            age = self.latest_pose_age()
+            if pose is None or age > observation_timeout:
+                continue
+            drift = self.pose_distance(pose, planned_pose)
+            if planned_pose is None or drift > replan_threshold:
+                self.emit_event("PLAN_STARTED", details={"tracking_update": updates})
+                try:
+                    state = self.current_robot_state()
+                    positions = self.current_positions()
+                    ik_state, joints = self.compute_ik_for_pose(
+                        "TRACKING_PREGRASP", pose, state, ik_timeout=0.35
+                    )
+                    plan = self.plan_to_pregrasp(state, joints)
+                    plan_duration, maximum_step, maximum_velocity = self.validate_trajectory(
+                        plan, positions, joints
+                    )
+                    if execute:
+                        self.execute_trajectory(
+                            plan,
+                            positions,
+                            positions[6],
+                            args.slowdown,
+                            args.speed_percent,
+                            args.effort,
+                            args.tracking_limit,
+                        )
+                    planned_pose = pose
+                    planned_joints = list(joints)
+                    updates += 1
+                    self.emit_event(
+                        "PLAN_SUCCEEDED",
+                        details={
+                            "tracking_update": updates,
+                            "plan_duration_s": plan_duration,
+                            "maximum_step_rad": maximum_step,
+                            "maximum_velocity_rad_s": maximum_velocity,
+                        },
+                    )
+                except Exception as error:
+                    self.emit_event(
+                        "PLAN_FAILED",
+                        details={"tracking_update": updates, "reason": str(error)},
+                    )
+                    raise
+            if planned_pose is None or planned_joints is None:
+                continue
+            latest_drift = self.pose_distance(self.pregrasp_pose, planned_pose)
+            if not execute:
+                # Plan-only tracking validates one fresh latest-target plan;
+                # it must not pretend that the arm mechanically followed it.
+                if (
+                    self.latest_pose_age() <= min(0.25, observation_timeout)
+                    and latest_drift <= commit_tolerance
+                ):
+                    self.auto_latch_target()
+                    return
+                if updates >= max_updates:
+                    break
+                continue
+            current = self.current_positions()
+            joint_error = max(
+                abs(float(actual) - float(planned))
+                for actual, planned in zip(current[:6], planned_joints)
+            )
+            if (
+                self.latest_pose_age() <= min(0.25, observation_timeout)
+                and latest_drift <= commit_tolerance
+                and joint_error <= 0.030
+            ):
+                self.auto_latch_target()
+                return
+            if updates >= max_updates:
+                break
         raise RuntimeError(
-            f"自动锁定{self.target_class}失败: " + last_message
+            "tracking failed to obtain a fresh, low-drift PREGRASP commitment "
+            f"within {timeout:.1f}s ({updates} updates)"
         )
 
     def wait_for_sequence_services(self):
@@ -1113,7 +1256,17 @@ def main():
         if args.auto_latch:
             node.wait_for_basic_inputs()
             node.wait_for_method_ready()
-            node.auto_latch_target()
+            if node.method_name == "tracking":
+                # Tracking needs MoveIt clients before its first receding-
+                # horizon PREGRASP plan.  The final commit is made only after
+                # the latest preview is fresh and mechanically reached.
+                node.wait_for_sequence_inputs()
+                node.wait_for_sequence_services()
+                node.spin_for(0.8)
+                node.apply_table()
+                node.follow_tracking_target(execute=args.execute, args=args)
+            else:
+                node.auto_latch_target()
         node.wait_for_sequence_inputs()
         node.wait_for_sequence_services()
         # Service discovery/planning setup can briefly leave the most recent
@@ -1129,7 +1282,13 @@ def main():
         )
         node.apply_table()
         start_state = node.current_robot_state()
-        selected = node.select_grasp_candidate(start_state, start_positions)
+        node.emit_event("PLAN_STARTED", details={"phase": "final_candidate"})
+        try:
+            selected = node.select_grasp_candidate(start_state, start_positions)
+        except Exception as error:
+            node.emit_event("PLAN_FAILED", details={"phase": "final_candidate", "reason": str(error)})
+            raise
+        node.emit_event("PLAN_SUCCEEDED", details={"phase": "final_candidate"})
         # Immutable execution snapshot: every real phase below must use the
         # exact poses that passed candidate IK and path validation, never a
         # later message from the continuously published preview topics.
@@ -1306,6 +1465,7 @@ def main():
         grasp_checkpoint_joints = list(
             approach_to_execute.solution.joint_trajectory.points[-1].positions
         )
+        node.emit_event("GRASP_STARTED", details={"target_class": args.target_class})
         node.execute_untimed_cartesian(
             "PREGRASP_TO_GRASP",
             approach_to_execute.solution.joint_trajectory,
@@ -1329,6 +1489,10 @@ def main():
 
         close_target_m = args.close_opening_mm / 1000.0
         close_feedback = node.command_gripper(close_target_m, args)
+        node.emit_event(
+            "GRIPPER_CLOSED",
+            details={"opening_m": close_feedback, "target_m": close_target_m},
+        )
         grip_margin_mm = (close_feedback - close_target_m) * 1000.0
         print(
             "夹持确认："
@@ -1399,6 +1563,7 @@ def main():
                 "100% 笛卡尔和碰撞检查的抬升轨迹。"
             )
             lift_to_execute = validated_lift
+        node.emit_event("LIFT_STARTED", details={"target_class": args.target_class})
         node.execute_untimed_cartesian(
             "GRASP_TO_LIFT",
             lift_to_execute.solution.joint_trajectory,
@@ -1408,6 +1573,7 @@ def main():
             args.effort,
             args.tracking_limit,
         )
+        node.emit_event("TASK_FINISHED", details={"target_class": args.target_class})
         print(f"===== {args.target_class}抓取并抬升完成 =====")
         print("机械臂保持LIFT姿态和夹爪闭合目标；没有失能、复位或回零。")
         return 0

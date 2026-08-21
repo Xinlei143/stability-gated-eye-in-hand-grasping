@@ -23,8 +23,6 @@ class MethodConfig:
     method: str = "gated"
     stability_duration_s: float = 5.0
     position_spread_threshold_m: float = 0.006
-    center_error_threshold_px: float = 30.0
-    joint_error_threshold_rad: float = 0.030
     minimum_stable_samples: int = 25
     observation_timeout_s: float = 1.0
 
@@ -34,8 +32,6 @@ class MethodConfig:
         for name in (
             "stability_duration_s",
             "position_spread_threshold_m",
-            "center_error_threshold_px",
-            "joint_error_threshold_rad",
             "observation_timeout_s",
         ):
             value = float(getattr(self, name))
@@ -64,7 +60,12 @@ class MethodPolicy:
 
     def __init__(self, config: MethodConfig):
         self.config = config
+        # `current_point` is the live method output.  `committed_point` is an
+        # explicit execution snapshot and survives a later observation timeout
+        # until reset().  `latched_point` remains as a read-only compatibility
+        # field for callers that used the Stage-4 policy directly.
         self.latched_point = None
+        self.committed_point = None
         self.current_point = None
         self.last_observation_at = None
         self._stable_samples = deque()
@@ -76,6 +77,7 @@ class MethodPolicy:
 
     def reset(self):
         self.latched_point = None
+        self.committed_point = None
         self.current_point = None
         self.last_observation_at = None
         self._stable_samples.clear()
@@ -84,26 +86,7 @@ class MethodPolicy:
     def _decision(self, *, reset=False, reason=""):
         return MethodDecision(self.current_point, self._ready, reset, reason)
 
-    def _within_optional_error_limits(self, center_error_px, joint_error_rad):
-        if center_error_px is not None:
-            value = float(center_error_px)
-            if not math.isfinite(value) or abs(value) > self.config.center_error_threshold_px:
-                return False
-        if joint_error_rad is not None:
-            value = float(joint_error_rad)
-            if not math.isfinite(value) or abs(value) > self.config.joint_error_threshold_rad:
-                return False
-        return True
-
-    def update(
-        self,
-        point,
-        timestamp,
-        *,
-        valid=True,
-        center_error_px=None,
-        joint_error_rad=None,
-    ):
+    def update(self, point, timestamp, *, valid=True):
         """Consume one observation and return the selected point/readiness."""
 
         timestamp = float(timestamp)
@@ -130,11 +113,6 @@ class MethodPolicy:
             self._ready = True
             return self._decision(reason="tracking_observation")
 
-        if not self._within_optional_error_limits(center_error_px, joint_error_rad):
-            self._stable_samples.clear()
-            self._ready = False
-            return self._decision(reset=True, reason="error_threshold")
-
         self._stable_samples.append((timestamp, point))
         center = self._median_point(item[1] for item in self._stable_samples)
         spread = max(self._distance(item[1], center) for item in self._stable_samples)
@@ -154,6 +132,15 @@ class MethodPolicy:
             self.current_point = center
         return self._decision(reason="stable_window" if self._ready else "stabilizing")
 
+    def commit(self):
+        """Freeze the current ready target for the execution phase."""
+
+        if self.current_point is None or not self._ready:
+            raise RuntimeError("method is not ready with a valid current target")
+        self.committed_point = tuple(self.current_point)
+        self.latched_point = self.committed_point
+        return self.committed_point
+
     def expire(self, timestamp):
         timestamp = float(timestamp)
         if not math.isfinite(timestamp):
@@ -162,11 +149,14 @@ class MethodPolicy:
             return self._decision(reset=True, reason="no_observation")
         if timestamp - self.last_observation_at <= self.config.observation_timeout_s:
             return self._decision(reason="observation_fresh")
+        if self.config.method == "snapshot":
+            # A snapshot is intentionally a one-shot observation.  Losing the
+            # stream after it was acquired must not revoke readiness or move
+            # the selected target underneath the planner.
+            return self._decision(reason="snapshot_observation_timeout")
         self.current_point = None
         self._stable_samples.clear()
         self._ready = False
-        if self.config.method != "snapshot":
-            self.latched_point = None
         return self._decision(reset=True, reason="observation_timeout")
 
     @staticmethod

@@ -30,6 +30,7 @@ class FoamGraspPosePreviewNode(Node):
 
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("input_topic", INPUT_TOPIC)
+        self.declare_parameter("class_topic", "/foam_grasp/latched_target_class")
         self.declare_parameter("table_height", 0.001)
         self.declare_parameter("cube_size", 0.050)
         self.declare_parameter("cylinder_diameter", 0.070)
@@ -44,6 +45,7 @@ class FoamGraspPosePreviewNode(Node):
 
         self.base_frame = str(self.get_parameter("base_frame").value)
         self.input_topic = str(self.get_parameter("input_topic").value)
+        self.class_topic = str(self.get_parameter("class_topic").value)
         self.table_height = float(
             self.get_parameter("table_height").value
         )
@@ -101,7 +103,7 @@ class FoamGraspPosePreviewNode(Node):
         )
         self.class_subscription = self.create_subscription(
             String,
-            "/foam_grasp/latched_target_class",
+            self.class_topic,
             self.class_callback,
             10,
         )
@@ -152,6 +154,7 @@ class FoamGraspPosePreviewNode(Node):
             "PREVIEW ONLY: this node never commands the Piper arm"
         )
         self.get_logger().info(f"Input: {self.input_topic}")
+        self.get_logger().info(f"Class input: {self.class_topic}")
         self.get_logger().info(
             "MoveIt link6 top-down orientation: quaternion=(0, 1, 0, 0)"
         )
