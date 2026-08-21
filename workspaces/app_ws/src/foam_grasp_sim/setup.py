@@ -41,6 +41,8 @@ setup(
             "foam_grasp_sim.simulated_perception_node:main",
             "method_policy_node = "
             "foam_grasp_sim.method_policy_node:main",
+            "metrics_logger_node = "
+            "foam_grasp_sim.metrics_logger_node:main",
         ],
     },
 )

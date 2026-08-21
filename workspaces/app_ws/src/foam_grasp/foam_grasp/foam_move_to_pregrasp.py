@@ -89,6 +89,11 @@ class FoamMoveToPregrasp(Node):
         self.table_center = self._read_table_vector(
             "table_pose", TABLE_CENTER, strictly_positive=False
         )
+        self.class_topic = str(
+            self.declare_or_get_parameter(
+                "class_topic", "/foam_grasp/latched_target_class"
+            )
+        )
 
         self.latest_joint_state = None
         self.latest_joint_received_at = 0.0
@@ -130,7 +135,7 @@ class FoamMoveToPregrasp(Node):
         )
         self.class_subscription = self.create_subscription(
             String,
-            "/foam_grasp/latched_target_class",
+            self.class_topic,
             self.class_callback,
             20,
         )

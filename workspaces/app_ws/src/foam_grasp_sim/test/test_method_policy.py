@@ -74,6 +74,35 @@ class MethodPolicyTest(unittest.TestCase):
         self.assertFalse(expired.ready)
         self.assertIsNone(expired.point)
 
+    def test_snapshot_timeout_preserves_ready_selected_target(self):
+        policy = MethodPolicy(
+            MethodConfig(method="snapshot", observation_timeout_s=0.5)
+        )
+        first = policy.update((0.40, 0.00, 0.03), 1.0)
+
+        expired = policy.expire(1.51)
+
+        self.assertTrue(first.ready)
+        self.assertTrue(expired.ready)
+        self.assertFalse(expired.reset)
+        self.assertEqual(expired.point, first.point)
+
+    def test_commit_is_explicit_and_reset_clears_committed_target(self):
+        policy = MethodPolicy(MethodConfig(method="tracking"))
+        policy.update((0.40, 0.00, 0.03), 1.0)
+
+        self.assertIsNone(policy.committed_point)
+        committed = policy.commit()
+        self.assertEqual(committed, (0.40, 0.00, 0.03))
+        self.assertEqual(policy.committed_point, committed)
+
+        policy.update((0.50, 0.00, 0.03), 2.0)
+        self.assertEqual(policy.current_point, (0.50, 0.00, 0.03))
+        self.assertEqual(policy.committed_point, (0.40, 0.00, 0.03))
+        policy.reset()
+        self.assertIsNone(policy.committed_point)
+        self.assertIsNone(policy.current_point)
+
     def test_invalid_method_and_gate_parameters_are_rejected(self):
         self.assertEqual(METHODS, ("snapshot", "tracking", "gated"))
         with self.assertRaises(ValueError):
@@ -82,6 +111,8 @@ class MethodPolicyTest(unittest.TestCase):
             MethodConfig(method="gated", stability_duration_s=0.0)
         with self.assertRaises(ValueError):
             MethodConfig(method="gated", minimum_stable_samples=1)
+        self.assertFalse(hasattr(MethodConfig(), "center_error_threshold_px"))
+        self.assertFalse(hasattr(MethodConfig(), "joint_error_threshold_rad"))
 
 
 if __name__ == "__main__":

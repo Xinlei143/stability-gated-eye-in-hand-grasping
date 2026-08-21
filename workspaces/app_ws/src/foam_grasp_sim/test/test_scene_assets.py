@@ -61,6 +61,9 @@ class SceneAssetTest(unittest.TestCase):
         self.assertEqual(method["stability_duration"], 5.0)
         self.assertEqual(method["position_spread_threshold"], 0.006)
         self.assertEqual(method["minimum_stable_samples"], 25)
+        self.assertNotIn("center_error_threshold", method)
+        self.assertNotIn("joint_error_threshold", method)
+        self.assertEqual(method["tracking_max_updates"], 20)
 
     def test_piper_composition_owns_world_and_reuses_upstream_assets(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
@@ -129,10 +132,10 @@ class SceneAssetTest(unittest.TestCase):
             "target_motion_node",
             "simulated_perception_node",
             "rgbd",
-            "target_latch_node",
             "grasp_pose_preview_node",
             "object_grasp_sequence",
             "AUTO_FULL_OBJECT_GRASP",
+            "metrics_logger_node",
         ):
             self.assertIn(value, bringup)
         self.assertNotIn("start_executor", bringup)
@@ -152,23 +155,41 @@ class SceneAssetTest(unittest.TestCase):
         for parameter in (
             "stability_duration",
             "position_spread_threshold",
-            "center_error_threshold",
-            "joint_error_threshold",
             "minimum_stable_samples",
             "method_ready",
+            "commit_method_target",
+            "tracking_replan_threshold",
+            "tracking_max_updates",
         ):
             self.assertIn(parameter, bringup)
         self.assertIn("method_policy_node", setup)
         self.assertIn("wait_for_method_ready", sequence)
+        self.assertIn("commit_method_service", sequence)
         latch = (
             Path(__file__).parents[2]
             / "foam_grasp"
             / "foam_grasp"
             / "foam_target_latch_node.py"
         ).read_text()
-        self.assertIn('self.method == "tracking"', latch)
-        self.assertIn("points[-1]", latch)
+        self.assertNotIn('self.method == "tracking"', latch)
+        self.assertIn("message.header.stamp", latch)
         self.assertNotIn("requires trajectory:=static", bringup)
+
+    def test_stage5_benchmark_contract_is_wired(self):
+        setup = (PACKAGE_ROOT / "setup.py").read_text()
+        logger = (PACKAGE_ROOT / "foam_grasp_sim" / "metrics_logger_node.py").read_text()
+        events = (
+            Path(__file__).parents[2]
+            / "foam_grasp"
+            / "foam_grasp"
+            / "benchmark_events.py"
+        ).read_text()
+        self.assertIn("metrics_logger_node", setup)
+        self.assertIn("metadata.json", logger)
+        self.assertIn("states.csv", logger)
+        self.assertIn("events.csv", logger)
+        self.assertIn("metrics.json", logger)
+        self.assertIn("schema_version", events)
 
     def test_python_nodes_install_into_ros2_lib_directory(self):
         setup_cfg = PACKAGE_ROOT / "setup.cfg"

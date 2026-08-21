@@ -173,6 +173,8 @@ def generate_launch_description():
         "outlier_range_mm": _parameter("outlier_range_mm", float),
         "history_duration": _parameter("history_duration", float),
         "seed": _parameter("seed", int),
+        "scenario": LaunchConfiguration("scenario"),
+        "target_timeout": _parameter("observation_timeout", float),
     }
     simulated_perception = Node(
         package="foam_grasp_sim",
@@ -200,41 +202,23 @@ def generate_launch_description():
                 "position_spread_threshold": _parameter(
                     "position_spread_threshold", float
                 ),
-                "center_error_threshold": _parameter(
-                    "center_error_threshold", float
-                ),
-                "joint_error_threshold": _parameter(
-                    "joint_error_threshold", float
-                ),
                 "minimum_stable_samples": _parameter(
                     "minimum_stable_samples", int
                 ),
                 "observation_timeout": _parameter("observation_timeout", float),
+                "scenario": LaunchConfiguration("scenario"),
+                "seed": _parameter("seed", int),
             }
         ],
     )
 
-    latch_parameters = {
+    pose_parameters = {
         "use_sim_time": execution["use_sim_time"],
-        "method": method,
+        "input_topic": PythonExpression(
+            ["'/foam_grasp/' + '", target_model, "' + '_method_point_base'"]
+        ),
+        "class_topic": "/foam_grasp/method_target_class",
     }
-    latch_parameters.update(pipeline["target_latch"])
-    target_latch = Node(
-        package="foam_grasp",
-        executable="target_latch_node",
-        name="foam_target_latch",
-        output="screen",
-        parameters=[latch_parameters],
-        remappings=[
-            (
-                f"/foam_grasp/{name}_point_base",
-                f"/foam_grasp/{name}_method_point_base",
-            )
-            for name in TARGET_MODELS
-        ],
-        condition=IfCondition(run_grasp_pipeline),
-    )
-    pose_parameters = {"use_sim_time": execution["use_sim_time"]}
     pose_parameters.update(pipeline["pose_preview"])
     grasp_pose_preview = Node(
         package="foam_grasp",
@@ -252,6 +236,15 @@ def generate_launch_description():
             "table_pose": table["pose"],
             "wait_for_method_ready": True,
             "method_ready_timeout": 60.0,
+            "method": method,
+            "commit_method_service": "/foam_grasp/commit_method_target",
+            "class_topic": "/foam_grasp/method_target_class",
+            "scenario": LaunchConfiguration("scenario"),
+            "tracking_commit_timeout": _parameter("tracking_commit_timeout", float),
+            "tracking_replan_threshold": _parameter("tracking_replan_threshold", float),
+            "tracking_commit_tolerance": _parameter("tracking_commit_tolerance", float),
+            "tracking_max_updates": _parameter("tracking_max_updates", int),
+            "observation_timeout": _parameter("observation_timeout", float),
         }
     )
     sequence_arguments = [
@@ -308,6 +301,38 @@ def generate_launch_description():
         ),
     )
 
+    benchmark_logger = Node(
+        package="foam_grasp_sim",
+        executable="metrics_logger_node",
+        name="foam_metrics_logger",
+        output="screen",
+        parameters=[
+            {
+                "use_sim_time": execution["use_sim_time"],
+                "record_benchmark": True,
+                "results_root": LaunchConfiguration("results_root"),
+                "run_id": LaunchConfiguration("run_id"),
+                "scenario": LaunchConfiguration("scenario"),
+                "method": method,
+                "target_model": target_model,
+                "seed": _parameter("seed", int),
+                "metrics_rate": _parameter("metrics_rate", float),
+                "tool_offset": 0.1358,
+            }
+        ],
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    run_grasp_pipeline,
+                    "' == 'true' and '",
+                    LaunchConfiguration("record_benchmark"),
+                    "' == 'true'",
+                ]
+            )
+        ),
+    )
+
     # Gazebo must expose model state and factory services before the selected
     # target can be detected and moved.  The perception node consumes actual
     # Gazebo state, never trajectory-commanded coordinates.
@@ -319,6 +344,7 @@ def generate_launch_description():
             *motion_nodes,
             simulated_perception,
             method_policy,
+            benchmark_logger,
         ],
     )
     sequence = TimerAction(period=10.0, actions=[plan_sequence, execute_sequence])
@@ -334,7 +360,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "run_grasp_pipeline",
                 default_value="true",
-                description="Start target latch, pose preview and sequence",
+                description="Start method policy, pose preview and sequence",
             ),
             DeclareLaunchArgument(
                 "execute_motion",
@@ -355,20 +381,43 @@ def generate_launch_description():
                 default_value=str(method_config["position_spread_threshold"]),
             ),
             DeclareLaunchArgument(
-                "center_error_threshold",
-                default_value=str(method_config["center_error_threshold"]),
-            ),
-            DeclareLaunchArgument(
-                "joint_error_threshold",
-                default_value=str(method_config["joint_error_threshold"]),
-            ),
-            DeclareLaunchArgument(
                 "minimum_stable_samples",
                 default_value=str(method_config["minimum_stable_samples"]),
             ),
             DeclareLaunchArgument(
                 "observation_timeout",
                 default_value=str(method_config["observation_timeout"]),
+            ),
+            DeclareLaunchArgument(
+                "tracking_commit_timeout",
+                default_value=str(method_config["tracking_commit_timeout"]),
+            ),
+            DeclareLaunchArgument(
+                "tracking_replan_threshold",
+                default_value=str(method_config["tracking_replan_threshold"]),
+            ),
+            DeclareLaunchArgument(
+                "tracking_commit_tolerance",
+                default_value=str(method_config["tracking_commit_tolerance"]),
+            ),
+            DeclareLaunchArgument(
+                "tracking_max_updates",
+                default_value=str(method_config["tracking_max_updates"]),
+            ),
+            DeclareLaunchArgument(
+                "scenario", default_value=str(motion["trajectory"])
+            ),
+            DeclareLaunchArgument(
+                "record_benchmark", default_value="false"
+            ),
+            DeclareLaunchArgument(
+                "results_root", default_value="results"
+            ),
+            DeclareLaunchArgument(
+                "run_id", default_value=""
+            ),
+            DeclareLaunchArgument(
+                "metrics_rate", default_value="10.0"
             ),
             DeclareLaunchArgument(
                 "trajectory",
@@ -430,7 +479,6 @@ def generate_launch_description():
             DeclareLaunchArgument("seed", default_value=str(perception["seed"])),
             piper_launch,
             moveit_launch,
-            target_latch,
             grasp_pose_preview,
             scene,
             sequence,

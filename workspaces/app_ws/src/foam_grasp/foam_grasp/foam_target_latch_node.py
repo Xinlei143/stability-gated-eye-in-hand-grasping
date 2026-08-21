@@ -7,7 +7,6 @@ MoveIt, and never enables or disables the arm.
 
 import math
 import statistics
-import time
 from collections import deque
 
 import rclpy
@@ -29,7 +28,6 @@ class FoamTargetLatchNode(Node):
         self.declare_parameter("sample_window", 1.5)
         self.declare_parameter("minimum_samples", 15)
         self.declare_parameter("maximum_spread", 0.010)
-        self.declare_parameter("method", "gated")
         self.declare_parameter("workspace_x_min", 0.15)
         self.declare_parameter("workspace_x_max", 0.60)
         self.declare_parameter("workspace_y_abs_max", 0.35)
@@ -46,7 +44,6 @@ class FoamTargetLatchNode(Node):
         self.maximum_spread = float(
             self.get_parameter("maximum_spread").value
         )
-        self.method = str(self.get_parameter("method").value)
         self.workspace_x_min = float(
             self.get_parameter("workspace_x_min").value
         )
@@ -69,9 +66,6 @@ class FoamTargetLatchNode(Node):
             raise RuntimeError("minimum_samples must be at least 3")
         if self.maximum_spread <= 0.0:
             raise RuntimeError("maximum_spread must be positive")
-        if self.method not in ("snapshot", "tracking", "gated"):
-            raise RuntimeError("method must be snapshot, tracking, or gated")
-
         self.samples = {
             name: deque(maxlen=300) for name in CLASS_NAMES
         }
@@ -156,7 +150,13 @@ class FoamTargetLatchNode(Node):
             return
         if not self.point_in_workspace(point):
             return
-        self.samples[name].append((time.monotonic(), point))
+        stamp = (
+            float(message.header.stamp.sec)
+            + float(message.header.stamp.nanosec) * 1e-9
+        )
+        if stamp <= 0.0:
+            stamp = self.get_clock().now().nanoseconds * 1e-9
+        self.samples[name].append((stamp, point))
 
     def point_in_workspace(self, point):
         x, y, z = point
@@ -166,8 +166,10 @@ class FoamTargetLatchNode(Node):
             and self.workspace_z_min <= z <= self.workspace_z_max
         )
 
-    def recent_points(self, name):
-        cutoff = time.monotonic() - self.sample_window
+    def recent_points(self, name, now=None):
+        if now is None:
+            now = self.get_clock().now().nanoseconds * 1e-9
+        cutoff = float(now) - self.sample_window
         queue = self.samples[name]
         while queue and queue[0][0] < cutoff:
             queue.popleft()
@@ -202,15 +204,9 @@ class FoamTargetLatchNode(Node):
             )
             return response
 
-        if self.method == "tracking":
-            # The ungated closed-loop baseline intentionally latches the most
-            # recent valid observation; movement during the sample window is
-            # evidence of tracking, not a latch failure.
-            center = points[-1]
-        else:
-            center = self.median_point(points)
+        center = self.median_point(points)
         spread = self.maximum_distance(points, center)
-        if self.method != "tracking" and spread > self.maximum_spread:
+        if spread > self.maximum_spread:
             response.success = False
             response.message = (
                 f"{name}: unstable; spread={spread:.4f} m exceeds "

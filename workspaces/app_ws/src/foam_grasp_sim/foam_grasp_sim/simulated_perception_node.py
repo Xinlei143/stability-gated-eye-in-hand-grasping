@@ -7,6 +7,7 @@ import rclpy
 from geometry_msgs.msg import PointStamped
 from rclpy.node import Node
 
+from foam_grasp.benchmark_events import BenchmarkEventPublisher
 from foam_grasp_sim.perception_model import (
     DelayedPointBuffer,
     DisturbanceModel,
@@ -47,6 +48,8 @@ class SimulatedPerceptionNode(Node):
         self.declare_parameter("outlier_range_mm", 50.0)
         self.declare_parameter("history_duration", 10.0)
         self.declare_parameter("seed", 42)
+        self.declare_parameter("scenario", "static")
+        self.declare_parameter("target_timeout", 0.5)
 
         self.target_model = str(self.get_parameter("target_model").value)
         if self.target_model not in TARGET_MODELS:
@@ -84,6 +87,14 @@ class SimulatedPerceptionNode(Node):
             self.settings["outlier_range_m"],
         )
         self.last_published_source_stamp = -math.inf
+        self.scenario = str(self.get_parameter("scenario").value)
+        self.seed = int(self.get_parameter("seed").value)
+        self.target_timeout = float(self.get_parameter("target_timeout").value)
+        if not math.isfinite(self.target_timeout) or self.target_timeout <= 0.0:
+            raise RuntimeError("target_timeout must be positive")
+        self.event_publisher = BenchmarkEventPublisher(self)
+        self.target_visible = False
+        self.last_observation_at = None
         self.ground_truth_subscription = self.create_subscription(
             PointStamped,
             str(self.get_parameter("ground_truth_topic").value),
@@ -130,6 +141,18 @@ class SimulatedPerceptionNode(Node):
 
     def sample_and_publish(self):
         now = self.now_seconds()
+        if (
+            self.target_visible
+            and self.last_observation_at is not None
+            and now - self.last_observation_at > self.target_timeout
+        ):
+            self.target_visible = False
+            self.event_publisher.publish(
+                "TARGET_LOST",
+                method="",
+                scenario=self.scenario,
+                seed=self.seed,
+            )
         self.buffer.prune(now)
         source = self.buffer.latest_at_or_before(
             now
@@ -152,6 +175,19 @@ class SimulatedPerceptionNode(Node):
         message.header.frame_id = self.base_frame
         message.point.x, message.point.y, message.point.z = observed
         self.publisher.publish(message)
+        self.last_observation_at = now
+        if not self.target_visible:
+            self.target_visible = True
+            self.event_publisher.publish(
+                "TARGET_OBSERVED",
+                method="",
+                scenario=self.scenario,
+                seed=self.seed,
+                sim_time_ns=(
+                    int(message.header.stamp.sec) * 1_000_000_000
+                    + int(message.header.stamp.nanosec)
+                ),
+            )
 
 
 def main():
