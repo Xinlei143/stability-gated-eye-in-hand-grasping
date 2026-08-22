@@ -88,6 +88,7 @@ class SceneAssetTest(unittest.TestCase):
 
     def test_eye_in_hand_xacro_declares_rgbd_sensor_and_optical_frames(self):
         path = PACKAGE_ROOT / "urdf" / "piper_eye_in_hand_gazebo.xacro"
+        self.assertNotIn("Piper's upstream Gazebo description plus", path.read_text())
         root = ET.parse(path).getroot()
         self.assertEqual(root.tag, "robot")
         include = root.find("{http://www.ros.org/wiki/xacro}include")
@@ -158,6 +159,10 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn('LaunchConfiguration("robot_xacro")', bringup)
         self.assertIn('"robot_xacro": robot_xacro', bringup)
 
+    def test_benchmark_condition_json_is_forced_to_string(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        self.assertIn('_parameter("condition_json", str)', bringup)
+
     def test_eye_in_hand_urdf_is_installed_with_gazebo_plugins_dependency(self):
         setup = (PACKAGE_ROOT / "setup.py").read_text()
         package = (PACKAGE_ROOT / "package.xml").read_text()
@@ -191,14 +196,16 @@ class SceneAssetTest(unittest.TestCase):
                     model.find("link/collision/surface/friction"), path
                 )
 
-    def test_world_contains_only_physics_and_gravity(self):
+    def test_world_contains_static_grasp_table_with_physics_and_gravity(self):
         root = ET.parse(PACKAGE_ROOT / "worlds" / "grasp_table.world").getroot()
         world = root.find("world")
         self.assertIsNotNone(world)
         self.assertEqual(world.findtext("gravity"), "0 0 -9.81")
         self.assertEqual(world.findtext("physics/max_step_size"), "0.001")
         self.assertEqual(world.findtext("physics/real_time_update_rate"), "1000")
-        self.assertIsNone(world.find("model[@name='grasp_table']"))
+        table = world.find("model[@name='grasp_table']")
+        self.assertIsNotNone(table)
+        self.assertEqual(table.findtext("static"), "true")
 
     def test_bringup_exposes_stage3_motion_and_perception_pipeline(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
@@ -219,6 +226,36 @@ class SceneAssetTest(unittest.TestCase):
             self.assertIn(value, bringup)
         self.assertNotIn("start_executor", bringup)
         self.assertNotIn('executable="executor"', bringup)
+
+    def test_piper_ros2_control_uses_the_upstream_robot_state_publisher_name(self):
+        launch = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
+        self.assertIn('name="robot_state_publisher"', launch)
+        self.assertNotIn('name="foam_grasp_sim_robot_state_publisher"', launch)
+
+    def test_piper_sim_defaults_to_headless_gzserver(self):
+        launch = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
+        self.assertIn('"gazebo_executable"', launch)
+        self.assertIn('default_value="gzserver"', launch)
+
+    def test_piper_robot_description_is_explicitly_a_string_parameter(self):
+        launch = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
+        self.assertIn("ParameterValue(robot_description, value_type=str)", launch)
+
+    def test_world_loads_gazebo_state_plugin_for_target_ground_truth(self):
+        world = (PACKAGE_ROOT / "worlds" / "grasp_table.world").read_text()
+        self.assertIn('filename="libgazebo_ros_state.so"', world)
+        self.assertIn("<namespace>/gazebo</namespace>", world)
+
+    def test_target_spawn_is_serialized_before_motion_and_perception(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        self.assertIn("target_spawns", bringup)
+        self.assertIn("target_action=target_spawn", bringup)
+
+    def test_table_model_has_inertial_data_for_gazebo_factory(self):
+        table = (PACKAGE_ROOT / "models" / "table" / "model.sdf").read_text()
+        self.assertIn("<inertial>", table)
+        self.assertIn("<mass>", table)
+
 
     def test_stage4_method_layer_is_wired_before_latch_and_execution(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()

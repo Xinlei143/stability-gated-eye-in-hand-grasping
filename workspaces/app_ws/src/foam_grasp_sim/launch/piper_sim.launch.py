@@ -13,6 +13,7 @@ from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventH
 from launch.event_handlers import OnProcessExit
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def _controller_spawner(name):
@@ -28,6 +29,7 @@ def generate_launch_description():
     simulation_share = get_package_share_directory("foam_grasp_sim")
     description_share = get_package_share_directory("piper_description")
     world = LaunchConfiguration("world")
+    gazebo_executable = LaunchConfiguration("gazebo_executable")
     default_robot_xacro = (
         Path(description_share) / "urdf" / "piper_description_gazebo.xacro"
     )
@@ -35,7 +37,7 @@ def generate_launch_description():
 
     gazebo = ExecuteProcess(
         cmd=[
-            "gazebo",
+            gazebo_executable,
             "--verbose",
             "-s",
             "libgazebo_ros_init.so",
@@ -51,10 +53,12 @@ def generate_launch_description():
     robot_state_publisher = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
-        name="foam_grasp_sim_robot_state_publisher",
+        # piper_description_gazebo.xacro's gazebo_ros2_control plugin waits
+        # for this exact node name when requesting robot_description.
+        name="robot_state_publisher",
         output="screen",
         parameters=[
-            {"robot_description": robot_description},
+            {"robot_description": ParameterValue(robot_description, value_type=str)},
             {"use_sim_time": True},
         ],
     )
@@ -101,6 +105,11 @@ def generate_launch_description():
                     "Robot Xacro passed to robot_state_publisher and Gazebo; "
                     "defaults to the pinned upstream Piper description"
                 ),
+            ),
+            DeclareLaunchArgument(
+                "gazebo_executable",
+                default_value="gzserver",
+                description="Gazebo executable; use gazebo only when a GUI is available",
             ),
             gazebo,
             robot_state_publisher,

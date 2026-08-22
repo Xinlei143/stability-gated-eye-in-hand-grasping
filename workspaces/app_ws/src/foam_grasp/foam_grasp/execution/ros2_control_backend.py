@@ -191,6 +191,7 @@ class Ros2ControlBackend(ExecutionBackend):
             ),
             self.gripper_client,
             "gripper",
+            check_final_error=False,
         )
         self.node.spin_for(0.2)
         feedback = self.node.current_positions()[6]
@@ -253,7 +254,7 @@ class Ros2ControlBackend(ExecutionBackend):
         trajectory.points = [point]
         return trajectory
 
-    def _execute(self, trajectory, client, label):
+    def _execute(self, trajectory, client, label, *, check_final_error=True):
         if not self._prepared:
             raise RuntimeError("simulation backend is not prepared")
         if not trajectory.points:
@@ -287,16 +288,17 @@ class Ros2ControlBackend(ExecutionBackend):
                     f"{int(result.error_code)}"
                 )
             final_error = self._final_error(trajectory)
-            tolerance = (
-                self.gripper_tolerance
-                if client is self.gripper_client
-                else self.final_tolerance
-            )
-            if final_error > tolerance:
-                raise RuntimeError(
-                    f"{label} final joint error {final_error:.4f} exceeds "
-                    f"{tolerance:.4f}"
+            if check_final_error:
+                tolerance = (
+                    self.gripper_tolerance
+                    if client is self.gripper_client
+                    else self.final_tolerance
                 )
+                if final_error > tolerance:
+                    raise RuntimeError(
+                        f"{label} final joint error {final_error:.4f} exceeds "
+                        f"{tolerance:.4f}"
+                    )
             return ExecutionResult(
                 duration_sec=time.monotonic() - start,
                 final_error=final_error,
@@ -348,12 +350,12 @@ class Ros2ControlBackend(ExecutionBackend):
                 errors.append(abs(actual[index] - float(positions[name])))
         if self.gripper_joint_name in positions:
             command_position = float(positions[self.gripper_joint_name])
-            command_scale = self.gripper_command_scale
-            if abs(command_scale) < 1e-9:
-                raise RuntimeError("gripper_command_scale must be non-zero")
-            feedback_position = command_position * (
-                self.gripper_feedback_scale / command_scale
-            )
+            # ``trajectory`` already contains the controller-space command
+            # after ``gripper_command_scale`` was applied.  Convert that
+            # command to the normalized opening exactly once; dividing by the
+            # command scale again compares against a value four times too
+            # large for Piper's 0.5/2.0 jaw mapping.
+            feedback_position = command_position * self.gripper_feedback_scale
             errors.append(abs(actual[6] - feedback_position))
         return max(errors, default=0.0)
 

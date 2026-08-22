@@ -51,10 +51,13 @@ def _atomic_write(path: Path, content: str) -> None:
 
 
 def parse_terminal_line(line: str) -> dict[str, Any] | None:
-    if not line.startswith(TERMINAL_PREFIX):
+    # ros2 launch prefixes child stdout (for example ``[node-12] ``), while
+    # the event contract remains the fixed single-line marker.
+    marker = line.find(TERMINAL_PREFIX)
+    if marker < 0:
         return None
     try:
-        event = parse_event(line[len(TERMINAL_PREFIX):].strip())
+        event = parse_event(line[marker + len(TERMINAL_PREFIX):].strip())
     except (TypeError, ValueError, json.JSONDecodeError):
         return None
     return event if event.get("event") in TERMINAL_EVENTS else None
@@ -133,11 +136,15 @@ class CampaignRunner:
         campaign_dir: Path,
         *,
         timeout_s: float | None = None,
+        logger_flush_grace_s: float = 1.0,
         popen_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
     ):
         self.specs = specs
         self.campaign_dir = campaign_dir
         self.timeout_s = timeout_s
+        self.logger_flush_grace_s = float(logger_flush_grace_s)
+        if self.logger_flush_grace_s < 0.0:
+            raise ValueError("logger_flush_grace_s must be non-negative")
         self.popen_factory = popen_factory
         self.campaign_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir = self.campaign_dir / "logs"
@@ -262,6 +269,11 @@ class CampaignRunner:
                             break
                     if terminal is not None:
                         break
+                if terminal is not None and not timed_out:
+                    # The terminal publisher and metrics logger are separate
+                    # ROS nodes.  Give the logger one bounded flush window
+                    # before interrupting the launch process group.
+                    time.sleep(self.logger_flush_grace_s)
                 if terminal is not None or timed_out:
                     cleanup = stop_process_group(process)
                 else:

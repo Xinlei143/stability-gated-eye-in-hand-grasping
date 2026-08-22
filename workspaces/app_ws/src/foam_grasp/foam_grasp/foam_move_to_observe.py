@@ -6,6 +6,7 @@ import sys
 import time
 
 import rclpy
+from rclpy.utilities import remove_ros_args
 
 from foam_grasp.foam_move_to_pregrasp import FoamMoveToPregrasp
 
@@ -106,7 +107,7 @@ class FoamMoveToObserve(FoamMoveToPregrasp):
         return positions
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="移动到固定相机观察姿态")
     parser.add_argument(
         "--execution-backend",
@@ -128,7 +129,10 @@ def parse_args():
     parser.add_argument("--effort", type=float, default=0.5)
     parser.add_argument("--tracking-limit", type=float, default=0.20)
     parser.add_argument("--countdown-seconds", type=int, default=5)
-    args = parser.parse_args()
+    if argv is None:
+        argv = sys.argv[1:]
+    ros_argv = remove_ros_args([sys.argv[0], *argv])[1:]
+    args = parser.parse_args(ros_argv)
     if args.execute and args.confirm != CONFIRM_TOKEN:
         parser.error(f"实际执行需要 --confirm {CONFIRM_TOKEN}")
     if not 1.5 <= args.slowdown <= 4.0:
@@ -144,9 +148,9 @@ def parse_args():
     return args
 
 
-def main():
-    args = parse_args()
-    rclpy.init()
+def main(argv=None):
+    args = parse_args(argv)
+    rclpy.init(args=argv)
     node = FoamMoveToObserve(execution_backend=args.execution_backend)
     try:
         node.wait_for_robot_inputs()
@@ -205,6 +209,9 @@ def main():
             print(f"{remaining} 秒后执行；按Ctrl+C取消。", flush=True)
             node.spin_for(1.0)
 
+        # Planning can take longer than the strict feedback-age bound. Flush
+        # one fresh feedback window before validating the execution start.
+        node.spin_for(0.8)
         refreshed = node.validate_robot_state()
         drift = max(
             abs(actual - planned)

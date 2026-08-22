@@ -13,6 +13,14 @@ class FullPipelineLaunchTest(unittest.TestCase):
         self.assertIn('executable="camera_to_base_node"', source)
         self.assertIn('"transform_source": "tf"', source)
         self.assertIn("piper_eye_in_hand_gazebo.xacro", source)
+        self.assertIn('executable="move_to_observe"', source)
+        self.assertIn('AUTO_MOVE_TO_OBSERVE', source)
+        self.assertIn("TimerAction(period=5.0, actions=[move_to_observe])", source)
+
+    def test_moveit_simulation_does_not_enable_unavailable_kinect_updaters(self):
+        source = (Path(__file__).parents[1] / "launch" / "sim_moveit.launch.py").read_text(encoding="utf-8")
+        self.assertIn("sensors_3d", source)
+        self.assertIn("replace", source)
 
     def test_pipeline_does_not_duplicate_simulation_nodes(self):
         source = (Path(__file__).parents[1] / "launch" / "full_pipeline.launch.py").read_text(encoding="utf-8")

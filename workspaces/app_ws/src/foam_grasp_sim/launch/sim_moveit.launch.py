@@ -1,5 +1,7 @@
 """MoveIt planning-only launch for the Piper Gazebo feedback topics."""
 
+from dataclasses import replace
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.conditions import IfCondition
@@ -18,6 +20,11 @@ def generate_launch_description():
         )
         .to_moveit_configs()
     )
+    # The pinned Piper package carries a legacy Kinect octomap updater. The
+    # simulation uses explicit table/object collision geometry and its own
+    # RGB-D pipeline, so loading that unavailable updater only creates a
+    # non-fatal startup failure and misleading logs.
+    moveit_config = replace(moveit_config, sensors_3d={})
 
     robot_state_publisher = Node(
         package="robot_state_publisher",
