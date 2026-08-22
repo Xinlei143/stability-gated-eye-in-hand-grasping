@@ -28,9 +28,10 @@ def generate_launch_description():
     simulation_share = get_package_share_directory("foam_grasp_sim")
     description_share = get_package_share_directory("piper_description")
     world = LaunchConfiguration("world")
-    robot_xacro = (
+    default_robot_xacro = (
         Path(description_share) / "urdf" / "piper_description_gazebo.xacro"
     )
+    robot_xacro = LaunchConfiguration("robot_xacro")
 
     gazebo = ExecuteProcess(
         cmd=[
@@ -45,7 +46,7 @@ def generate_launch_description():
         output="screen",
     )
     robot_description = Command(
-        [FindExecutable(name="xacro"), " ", str(robot_xacro)]
+        [FindExecutable(name="xacro"), " ", robot_xacro]
     )
     robot_state_publisher = Node(
         package="robot_state_publisher",
@@ -92,6 +93,14 @@ def generate_launch_description():
                     Path(simulation_share) / "worlds" / "grasp_table.world"
                 ),
                 description="Gazebo Classic world managed by foam_grasp_sim",
+            ),
+            DeclareLaunchArgument(
+                "robot_xacro",
+                default_value=str(default_robot_xacro),
+                description=(
+                    "Robot Xacro passed to robot_state_publisher and Gazebo; "
+                    "defaults to the pinned upstream Piper description"
+                ),
             ),
             gazebo,
             robot_state_publisher,

@@ -85,6 +85,7 @@ def _parameter(name, value_type):
 
 def generate_launch_description():
     package_share = get_package_share_directory("foam_grasp_sim")
+    description_share = get_package_share_directory("piper_description")
     table, targets, execution, pipeline, method_config, motion, perception = _load_simulation_config(
         package_share
     )
@@ -95,11 +96,13 @@ def generate_launch_description():
     trajectory = LaunchConfiguration("trajectory")
     perception_source = LaunchConfiguration("perception_source")
     method = LaunchConfiguration("method")
+    robot_xacro = LaunchConfiguration("robot_xacro")
 
     piper_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             str(Path(package_share) / "launch" / "piper_sim.launch.py")
-        )
+        ),
+        launch_arguments={"robot_xacro": robot_xacro}.items(),
     )
     moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -355,6 +358,15 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_rviz", default_value="true"),
+            DeclareLaunchArgument(
+                "robot_xacro",
+                default_value=str(
+                    Path(description_share)
+                    / "urdf"
+                    / "piper_description_gazebo.xacro"
+                ),
+                description="Robot Xacro forwarded to piper_sim.launch.py",
+            ),
             DeclareLaunchArgument(
                 "target_model",
                 default_value="cube",
