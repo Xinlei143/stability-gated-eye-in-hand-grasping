@@ -5,6 +5,7 @@ import json
 
 SCHEMA_VERSION = 1
 EVENT_TOPIC = "/foam_grasp/benchmark_event"
+TERMINAL_EVENTS = frozenset(("TRIAL_FINISHED", "TRIAL_FAILED"))
 
 
 def make_event(

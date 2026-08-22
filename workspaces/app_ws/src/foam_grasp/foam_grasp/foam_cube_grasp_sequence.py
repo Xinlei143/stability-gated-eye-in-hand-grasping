@@ -209,13 +209,19 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         raise RuntimeError("缺少执行后端所需的关节或状态反馈")
 
     def emit_event(self, name, *, details=None):
-        self.event_publisher.publish(
+        payload = self.event_publisher.publish(
             name,
             method=self.method_name,
             scenario=self.scenario,
             seed=self.seed,
             details=details,
         )
+        if str(name).upper() in {"TRIAL_FINISHED", "TRIAL_FAILED"}:
+            # The runner supervises this one launch process group.  A stable
+            # stdout marker gives it a terminal signal without starting a
+            # second ROS graph or copying the simulation pipeline.
+            print(f"BENCHMARK_TERMINAL_EVENT={payload}", flush=True)
+        return payload
 
     def auto_latch_target(self):
         """Commit the method node's ready target (legacy CLI name retained)."""
@@ -1331,6 +1337,11 @@ def main():
 
         if not args.execute:
             print("PLAN-ONLY：没有创建/joint_states发布者，没有移动或抓取。")
+            node.emit_event(
+                "TRIAL_FINISHED",
+                details={"execution_mode": "plan_only", "task_success": False},
+            )
+            node.spin_for(0.2)
             return 0
 
         node.ensure_command_path_is_exclusive()
@@ -1574,6 +1585,11 @@ def main():
             args.tracking_limit,
         )
         node.emit_event("TASK_FINISHED", details={"target_class": args.target_class})
+        node.emit_event(
+            "TRIAL_FINISHED",
+            details={"execution_mode": "execute", "task_success": True},
+        )
+        node.spin_for(0.2)
         print(f"===== {args.target_class}抓取并抬升完成 =====")
         print("机械臂保持LIFT姿态和夹爪闭合目标；没有失能、复位或回零。")
         return 0
@@ -1582,12 +1598,22 @@ def main():
             current = node.current_positions()
             node.publish_hold(current[6], args.speed_percent, args.effort)
         print("已取消并尝试保持当前位置；异常时使用硬件急停。")
+        node.emit_event(
+            "TRIAL_FAILED",
+            details={"reason": "keyboard_interrupt", "execution_mode": "execute"},
+        )
+        node.spin_for(0.2)
         return 130
     except Exception as error:
         if node.execution_backend.can_hold and node.latest_joint_state is not None:
             current = node.current_positions()
             node.publish_hold(current[6], args.speed_percent, args.effort)
         print(f"安全拒绝/中止：{error}", file=sys.stderr)
+        node.emit_event(
+            "TRIAL_FAILED",
+            details={"reason": str(error), "error_type": type(error).__name__},
+        )
+        node.spin_for(0.2)
         return 1
     finally:
         node.destroy_node()

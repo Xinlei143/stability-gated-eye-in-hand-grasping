@@ -92,6 +92,26 @@ class BenchmarkToolsTest(unittest.TestCase):
         self.assertAlmostEqual(result["tracking_rms_error_m"], 0.1)
         self.assertTrue(result["planning_success"])
 
+    def test_plan_only_trial_finished_is_not_task_success(self):
+        metrics = MetricsAccumulator()
+        metrics.record_event(json.loads(make_event("PLAN_SUCCEEDED", sim_time_ns=1)))
+        metrics.record_event(json.loads(make_event(
+            "TRIAL_FINISHED", sim_time_ns=2, details={"execution_mode": "plan_only"}
+        )))
+        result = metrics.finalize()
+        self.assertEqual(result["trial_status"], "finished")
+        self.assertTrue(result["trial_success"])
+        self.assertFalse(result["task_success"])
+
+    def test_failed_trial_has_failure_status(self):
+        metrics = MetricsAccumulator()
+        metrics.record_event(json.loads(make_event(
+            "TRIAL_FAILED", sim_time_ns=2, details={"reason": "timeout"}
+        )))
+        result = metrics.finalize()
+        self.assertEqual(result["trial_status"], "failed")
+        self.assertFalse(result["trial_success"])
+
 
 if __name__ == "__main__":
     unittest.main()

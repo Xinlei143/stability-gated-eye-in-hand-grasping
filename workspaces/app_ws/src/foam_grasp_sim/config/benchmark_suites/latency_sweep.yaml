@@ -1,0 +1,30 @@
+schema_version: 1
+name: latency_sweep
+defaults:
+  target_model: cube
+  execute_motion: false
+  run_grasp_pipeline: true
+  record_benchmark: true
+  use_rviz: false
+  perception_source: disturbed
+  latency_ms: 100.0
+  noise_std_mm: 5.0
+  dropout_probability: 0.1
+  outlier_probability: 0.01
+  outlier_range_mm: 50.0
+  trajectory: constant_velocity
+  velocity_x: 0.01
+  velocity_y: 0.0
+  velocity_z: 0.0
+  move_duration: 4.0
+  stop_duration: 6.0
+  stability_duration: 5.0
+  position_spread_threshold: 0.006
+  minimum_stable_samples: 25
+  observation_timeout: 1.0
+methods: [snapshot, tracking, gated]
+trajectories: [constant_velocity]
+seeds: [42]
+sweeps:
+  - parameter: latency_ms
+    values: [0.0, 50.0, 100.0, 200.0, 300.0]

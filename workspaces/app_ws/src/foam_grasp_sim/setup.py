@@ -17,6 +17,10 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         ("share/" + package_name + "/launch", glob("launch/*.launch.py")),
         ("share/" + package_name + "/config", glob("config/*.yaml")),
+        (
+            "share/" + package_name + "/config/benchmark_suites",
+            glob("config/benchmark_suites/*.yaml"),
+        ),
         ("share/" + package_name + "/worlds", glob("worlds/*")),
         ("share/" + package_name + "/models/table", ["models/table/model.sdf"]),
         ("share/" + package_name + "/models/cube", ["models/cube/model.sdf"]),
@@ -43,6 +47,7 @@ setup(
             "foam_grasp_sim.method_policy_node:main",
             "metrics_logger_node = "
             "foam_grasp_sim.metrics_logger_node:main",
+            "run_sim_benchmark = foam_grasp_sim.experiment_runner:main",
         ],
     },
 )
