@@ -1341,6 +1341,7 @@ def main():
                 "TRIAL_FINISHED",
                 details={"execution_mode": "plan_only", "task_success": False},
             )
+            node.spin_for(0.2)
             return 0
 
         node.ensure_command_path_is_exclusive()
@@ -1588,6 +1589,7 @@ def main():
             "TRIAL_FINISHED",
             details={"execution_mode": "execute", "task_success": True},
         )
+        node.spin_for(0.2)
         print(f"===== {args.target_class}抓取并抬升完成 =====")
         print("机械臂保持LIFT姿态和夹爪闭合目标；没有失能、复位或回零。")
         return 0
@@ -1600,6 +1602,7 @@ def main():
             "TRIAL_FAILED",
             details={"reason": "keyboard_interrupt", "execution_mode": "execute"},
         )
+        node.spin_for(0.2)
         return 130
     except Exception as error:
         if node.execution_backend.can_hold and node.latest_joint_state is not None:
@@ -1610,6 +1613,7 @@ def main():
             "TRIAL_FAILED",
             details={"reason": str(error), "error_type": type(error).__name__},
         )
+        node.spin_for(0.2)
         return 1
     finally:
         node.destroy_node()
