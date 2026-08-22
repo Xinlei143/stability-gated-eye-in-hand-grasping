@@ -329,10 +329,16 @@ def suite_path(value: str) -> Path:
     candidate = Path(value)
     if candidate.is_file():
         return candidate
-    root = Path(__file__).resolve().parents[1] / "config" / "benchmark_suites"
-    candidate = root / f"{value}.yaml"
-    if candidate.is_file():
-        return candidate
+    roots = [Path(__file__).resolve().parents[1] / "config" / "benchmark_suites"]
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        roots.insert(0, Path(get_package_share_directory("foam_grasp_sim")) / "config" / "benchmark_suites")
+    except Exception:
+        pass
+    for root in roots:
+        candidate = root / f"{value}.yaml"
+        if candidate.is_file():
+            return candidate
     raise FileNotFoundError(f"benchmark suite not found: {value}")
 
 
