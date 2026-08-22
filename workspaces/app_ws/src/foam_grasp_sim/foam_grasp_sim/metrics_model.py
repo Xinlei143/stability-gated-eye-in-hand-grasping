@@ -126,6 +126,20 @@ class MetricsAccumulator:
         task_success = any(
             event.get("event") == "TASK_FINISHED" for event in self.events
         )
+        terminal_events = [
+            event for event in self.events
+            if event.get("event") in {"TRIAL_FINISHED", "TRIAL_FAILED"}
+        ]
+        terminal = max(
+            terminal_events,
+            key=lambda event: int(event.get("sim_time_ns", 0)),
+            default=None,
+        )
+        trial_status = (
+            "finished" if terminal and terminal.get("event") == "TRIAL_FINISHED"
+            else "failed" if terminal and terminal.get("event") == "TRIAL_FAILED"
+            else "incomplete"
+        )
         result = {
             "tracking_rms_error_m": (
                 math.sqrt(sum(error * error for error in tracking_errors) / len(tracking_errors))
@@ -142,6 +156,8 @@ class MetricsAccumulator:
             "gate_resets": int(reset_count),
             "planning_success": bool(planning_success),
             "task_success": bool(task_success),
+            "trial_status": trial_status,
+            "trial_success": trial_status == "finished",
             "false_ready": bool(self._false_ready(ready_ns)),
             "state_samples": len(self.states),
             "event_count": len(self.events),
