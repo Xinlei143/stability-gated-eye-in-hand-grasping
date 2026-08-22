@@ -96,6 +96,22 @@ class BenchmarkSuiteTest(unittest.TestCase):
             with self.assertRaisesRegex(SuiteValidationError, "sweeps"):
                 load_suite(path)
 
+    def test_standard_suites_are_valid_and_have_expected_shape(self):
+        root = Path(__file__).resolve().parents[1] / "config" / "benchmark_suites"
+        expected = {
+            "smoke", "baseline_comparison", "latency_sweep", "noise_sweep",
+            "dropout_sweep", "gate_ablation",
+        }
+        self.assertEqual({path.stem for path in root.glob("*.yaml")}, expected)
+        for name in sorted(expected):
+            suite = load_suite(root / f"{name}.yaml")
+            trials = expand_suite(suite)
+            self.assertTrue(trials, name)
+            if name == "smoke":
+                self.assertEqual(len(trials), 1)
+            if name == "baseline_comparison":
+                self.assertEqual({trial.method for trial in trials}, {"snapshot", "tracking", "gated"})
+
 
 if __name__ == "__main__":
     unittest.main()

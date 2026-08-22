@@ -118,6 +118,5 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertEqual(rows[0]["status"], "timed_out")
             self.assertTrue(Path(rows[0]["log_path"]).is_file())
 
-
 if __name__ == "__main__":
     unittest.main()
