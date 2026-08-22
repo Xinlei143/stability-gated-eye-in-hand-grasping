@@ -77,7 +77,7 @@ class FoamSegmentationNode(Node):
         checkpoint = torch.load(
             checkpoint_path,
             map_location="cpu",
-            weights_only=False,
+            weights_only=True,
         )
 
         self.model = build_model()

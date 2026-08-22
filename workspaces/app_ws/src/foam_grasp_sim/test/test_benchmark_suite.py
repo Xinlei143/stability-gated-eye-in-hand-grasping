@@ -109,6 +109,8 @@ class BenchmarkSuiteTest(unittest.TestCase):
             self.assertTrue(trials, name)
             if name == "smoke":
                 self.assertEqual(len(trials), 1)
+                self.assertFalse(trials[0].execute_motion)
+                self.assertEqual(trials[0].resolved["perception_source"], "ground_truth")
             if name == "baseline_comparison":
                 self.assertEqual({trial.method for trial in trials}, {"snapshot", "tracking", "gated"})
 

@@ -27,6 +27,9 @@ class FakeNode:
     def is_finite(value):
         return math.isfinite(float(value))
 
+    def current_positions(self):
+        return [0.0] * 6 + [0.07]
+
 
 class ExecutionBackendTest(unittest.TestCase):
     def test_execution_result_keeps_legacy_unpacking(self):
@@ -64,6 +67,35 @@ class ExecutionBackendTest(unittest.TestCase):
         self.assertEqual(trajectory.joint_names, ["joint1"])
         self.assertAlmostEqual(trajectory.points[0].positions[0], 0.25)
         self.assertEqual(trajectory.points[0].time_from_start.nanosec, 150000000)
+
+    def test_simulation_gripper_final_error_compares_in_feedback_units(self):
+        backend = object.__new__(Ros2ControlBackend)
+        backend.node = FakeNode()
+        backend.gripper_joint_name = "joint7"
+        backend.gripper_command_scale = 0.5
+        backend.gripper_feedback_scale = 2.0
+        trajectory = Ros2ControlBackend._single_point_trajectory(
+            ["joint7"], [0.035], 0.15
+        )
+        self.assertAlmostEqual(backend._final_error(trajectory), 0.0)
+
+    def test_simulation_gripper_command_allows_contact_stop(self):
+        backend = object.__new__(Ros2ControlBackend)
+        backend.node = FakeNode()
+        backend.gripper_joint_name = "joint7"
+        backend.gripper_command_scale = 0.5
+        backend.gripper_client = object()
+        backend._prepared = True
+        calls = {}
+
+        def fake_execute(trajectory, client, label, **kwargs):
+            calls.update(kwargs)
+            return ExecutionResult(1.0, 0.0, 0.0, gripper_position=0.07)
+
+        backend._execute = fake_execute
+        backend.node.spin_for = lambda seconds: None
+        backend.command_gripper(0.04, types.SimpleNamespace())
+        self.assertFalse(calls["check_final_error"])
 
     def test_simulation_backend_does_not_use_node_publisher_hack(self):
         backend = object.__new__(Ros2ControlBackend)

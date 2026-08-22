@@ -3,6 +3,13 @@
   <model name="grasp_table">
     <static>true</static>
     <link name="table_link">
+      <inertial>
+        <mass>10.0</mass>
+        <inertia>
+          <ixx>0.410417</ixx><iyy>0.302083</iyy><izz>0.708333</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
       <collision name="collision">
         <geometry>
           <box><size>0.60 0.70 0.05</size></box>

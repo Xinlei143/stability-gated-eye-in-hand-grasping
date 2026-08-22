@@ -1,15 +1,4 @@
 <?xml version="1.0"?>
-<!--
-  Piper's upstream Gazebo description plus a deterministic eye-in-hand RGB-D
-  sensor.  The upstream description remains the source of the arm, gripper,
-  transmissions, and controller interfaces; this file only adds the camera
-  fixture and Gazebo sensor needed by the Stage 7 simulation pipeline.
-
-  The initial fixture transform is intentionally explicit and conservative:
-  camera_link is mounted 55 mm along link6's +Z tool axis and its +X axis is
-  aligned with that tool axis.  The transform is a simulation integration
-  assumption, not a replacement for a calibrated physical camera transform.
--->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="piper_eye_in_hand">
   <xacro:include
     filename="$(find piper_description)/urdf/piper_description_gazebo.xacro"/>

@@ -6,7 +6,9 @@ defaults:
   run_grasp_pipeline: true
   record_benchmark: true
   use_rviz: false
-  perception_source: disturbed
+  # Keep the one-trial smoke deterministic and gate-ready.  Disturbed RGB-D
+  # conditions are covered by the dedicated sweep suites.
+  perception_source: ground_truth
   latency_ms: 100.0
   noise_std_mm: 5.0
   dropout_probability: 0.1

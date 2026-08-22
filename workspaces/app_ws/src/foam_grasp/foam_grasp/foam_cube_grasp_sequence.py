@@ -21,6 +21,7 @@ import rclpy
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import DisplayTrajectory, MoveItErrorCodes, RobotState
 from moveit_msgs.srv import GetCartesianPath, GetPositionIK
+from rclpy.utilities import remove_ros_args
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
@@ -1159,7 +1160,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
 
 
 
-def parse_args():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description="泡沫目标物体抓取整合流程")
     parser.add_argument(
         "--execution-backend",
@@ -1212,7 +1213,10 @@ def parse_args():
         default=18.0,
         help="圆柱偏心弦夹取横向偏移，默认18mm",
     )
-    args = parser.parse_args()
+    if argv is None:
+        argv = sys.argv[1:]
+    ros_argv = remove_ros_args([sys.argv[0], *argv])[1:]
+    args = parser.parse_args(ros_argv)
     required_token = "AUTO_FULL_OBJECT_GRASP" if args.auto else CONFIRM_TOKEN
     if args.execute and args.confirm != required_token:
         parser.error(f"执行需要 --confirm {required_token}")
@@ -1250,14 +1254,15 @@ def parse_args():
     return args
 
 
-def main():
-    args = parse_args()
-    rclpy.init()
+def main(argv=None):
+    args = parse_args(argv)
+    rclpy.init(args=argv)
     node = FoamCubeGraspSequence(
         args.target_class,
         args.cylinder_chord_offset_mm / 1000.0,
         args.execution_backend,
     )
+    terminal_emitted = False
     try:
         if args.auto_latch:
             node.wait_for_basic_inputs()
@@ -1341,6 +1346,7 @@ def main():
                 "TRIAL_FINISHED",
                 details={"execution_mode": "plan_only", "task_success": False},
             )
+            terminal_emitted = True
             node.spin_for(0.2)
             return 0
 
@@ -1589,11 +1595,14 @@ def main():
             "TRIAL_FINISHED",
             details={"execution_mode": "execute", "task_success": True},
         )
+        terminal_emitted = True
         node.spin_for(0.2)
         print(f"===== {args.target_class}抓取并抬升完成 =====")
         print("机械臂保持LIFT姿态和夹爪闭合目标；没有失能、复位或回零。")
         return 0
     except KeyboardInterrupt:
+        if terminal_emitted:
+            return 0
         if node.execution_backend.can_hold and node.latest_joint_state is not None:
             current = node.current_positions()
             node.publish_hold(current[6], args.speed_percent, args.effort)

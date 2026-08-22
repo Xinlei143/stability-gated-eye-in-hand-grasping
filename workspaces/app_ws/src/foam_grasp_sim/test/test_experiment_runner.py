@@ -40,6 +40,14 @@ class ExperimentRunnerTest(unittest.TestCase):
             "details": {"execution_mode": "plan_only"},
         }
         self.assertEqual(parse_terminal_line(TERMINAL_PREFIX + json.dumps(payload))["event"], "TRIAL_FINISHED")
+        self.assertEqual(
+            parse_terminal_line(
+                "[object_grasp_sequence-12] "
+                + TERMINAL_PREFIX
+                + json.dumps({**payload, "event": "TRIAL_FAILED"})
+            )["event"],
+            "TRIAL_FAILED",
+        )
         self.assertIsNone(parse_terminal_line("PLAN_SUCCEEDED"))
         self.assertIsNone(parse_terminal_line(TERMINAL_PREFIX + "not-json"))
 
@@ -108,6 +116,11 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertEqual(rows[0]["status"], "finished")
             self.assertEqual(rows[0]["task_success"], "false")
             self.assertIn("TRIAL_FINISHED", rows[0]["terminal_event"])
+
+    def test_runner_waits_for_logger_flush_after_terminal_event(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runner = CampaignRunner(_specs(), Path(directory) / "campaign")
+            self.assertGreaterEqual(runner.logger_flush_grace_s, 0.5)
 
     def test_timeout_marks_trial_and_preserves_log(self):
         def factory(command, **kwargs):

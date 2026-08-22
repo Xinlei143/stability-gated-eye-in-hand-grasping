@@ -9,7 +9,8 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
+from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -39,6 +40,7 @@ def generate_launch_description():
             "pair_id": LaunchConfiguration("pair_id"),
             "condition_json": LaunchConfiguration("condition_json"),
             "robot_xacro": LaunchConfiguration("robot_xacro"),
+            "gazebo_executable": LaunchConfiguration("gazebo_executable"),
         }.items(),
     )
 
@@ -76,6 +78,24 @@ def generate_launch_description():
             }
         ],
     )
+    move_to_observe = Node(
+        package="foam_grasp",
+        executable="move_to_observe",
+        name="foam_move_to_observe_sim",
+        output="screen",
+        arguments=[
+            "--execution-backend",
+            "simulation",
+            "--execute",
+            "--confirm",
+            "AUTO_MOVE_TO_OBSERVE",
+            "--countdown-seconds",
+            "0",
+        ],
+        condition=IfCondition(
+            LaunchConfiguration("observe_before_rgbd")
+        ),
+    )
 
     declarations = [
         DeclareLaunchArgument("checkpoint", description="Absolute path to best_model.pth"),
@@ -85,6 +105,7 @@ def generate_launch_description():
         DeclareLaunchArgument("target_model", default_value="cube"),
         DeclareLaunchArgument("run_grasp_pipeline", default_value="true"),
         DeclareLaunchArgument("execute_motion", default_value="false"),
+        DeclareLaunchArgument("observe_before_rgbd", default_value="true"),
         DeclareLaunchArgument("method", default_value="gated"),
         DeclareLaunchArgument("trajectory", default_value="static"),
         DeclareLaunchArgument("record_benchmark", default_value="true"),
@@ -94,5 +115,15 @@ def generate_launch_description():
         DeclareLaunchArgument("pair_id", default_value=""),
         DeclareLaunchArgument("condition_json", default_value="{}"),
         DeclareLaunchArgument("robot_xacro", default_value=str(package_share / "urdf" / "piper_eye_in_hand_gazebo.xacro")),
+        DeclareLaunchArgument("gazebo_executable", default_value="gzserver"),
     ]
-    return LaunchDescription(declarations + [sim_launch, segmentation, depth_fusion, camera_to_base])
+    return LaunchDescription(
+        declarations
+        + [
+            sim_launch,
+            TimerAction(period=5.0, actions=[move_to_observe]),
+            segmentation,
+            depth_fusion,
+            camera_to_base,
+        ]
+    )

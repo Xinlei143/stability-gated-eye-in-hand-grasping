@@ -9,9 +9,11 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    RegisterEventHandler,
     TimerAction,
 )
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
@@ -97,12 +99,16 @@ def generate_launch_description():
     perception_source = LaunchConfiguration("perception_source")
     method = LaunchConfiguration("method")
     robot_xacro = LaunchConfiguration("robot_xacro")
+    gazebo_executable = LaunchConfiguration("gazebo_executable")
 
     piper_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             str(Path(package_share) / "launch" / "piper_sim.launch.py")
         ),
-        launch_arguments={"robot_xacro": robot_xacro}.items(),
+        launch_arguments={
+            "robot_xacro": robot_xacro,
+            "gazebo_executable": gazebo_executable,
+        }.items(),
     )
     moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -114,9 +120,6 @@ def generate_launch_description():
         }.items(),
     )
 
-    table_spawn = _scene_spawn(
-        package_share, "table", "grasp_table", table["pose"]
-    )
     target_spawns = [
         _scene_spawn(
             package_share,
@@ -323,7 +326,9 @@ def generate_launch_description():
                 "tool_offset": 0.1358,
                 "config_hash": LaunchConfiguration("config_hash"),
                 "pair_id": LaunchConfiguration("pair_id"),
-                "condition_json": LaunchConfiguration("condition_json"),
+                # JSON-looking launch values are otherwise parsed as YAML
+                # mappings by launch_ros; the logger contract is a string.
+                "condition_json": _parameter("condition_json", str),
             }
         ],
         condition=IfCondition(
@@ -339,20 +344,24 @@ def generate_launch_description():
         ),
     )
 
-    # Gazebo must expose model state and factory services before the selected
-    # target can be detected and moved.  The perception node consumes actual
-    # Gazebo state, never trajectory-commanded coordinates.
-    scene = TimerAction(
-        period=5.0,
-        actions=[
-            table_spawn,
-            *target_spawns,
-            *motion_nodes,
-            simulated_perception,
-            method_policy,
-            benchmark_logger,
-        ],
-    )
+    # The table is built into the world as a static model. Only the selected
+    # target uses the Gazebo factory, avoiding a known static-model spawn queue
+    # timeout while keeping target insertion serialized before the pipeline.
+    scene = TimerAction(period=10.0, actions=[*target_spawns])
+    pipeline_after_target_handlers = [
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=target_spawn,
+                on_exit=[
+                    *motion_nodes,
+                    simulated_perception,
+                    method_policy,
+                    benchmark_logger,
+                ],
+            )
+        )
+        for target_spawn in target_spawns
+    ]
     sequence = TimerAction(period=10.0, actions=[plan_sequence, execute_sequence])
 
     return LaunchDescription(
@@ -366,6 +375,11 @@ def generate_launch_description():
                     / "piper_description_gazebo.xacro"
                 ),
                 description="Robot Xacro forwarded to piper_sim.launch.py",
+            ),
+            DeclareLaunchArgument(
+                "gazebo_executable",
+                default_value="gzserver",
+                description="Gazebo executable; use gazebo only when a GUI is available",
             ),
             DeclareLaunchArgument(
                 "target_model",
@@ -499,6 +513,7 @@ def generate_launch_description():
             moveit_launch,
             grasp_pose_preview,
             scene,
+            *pipeline_after_target_handlers,
             sequence,
         ]
     )
