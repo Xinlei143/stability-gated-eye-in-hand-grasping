@@ -1,4 +1,4 @@
-# Gazebo benchmark contract (Stage 4/5)
+# Gazebo benchmark contract (Stage 4/5/6)
 
 `sim_bringup.launch.py` is the single entry point for the controlled Gazebo
 trial.  The method layer is now the only target gate in simulation:
@@ -73,3 +73,91 @@ For a plan-only validation use `execute_motion:=false`; tracking validates the
 latest PREGRASP plan and still commits the selected target, but it does not
 claim mechanical tracking.  Physical or simulated motion requires
 `execute_motion:=true` and the existing explicit execution safeguards.
+
+## Automated reproducible campaigns (Stage 6)
+
+`sim_bringup.launch.py` remains the only single-trial Gazebo entry point. The
+outer runner expands a validated YAML suite and starts that launch once per
+trial; it does not duplicate the simulation pipeline.
+
+Packaged suites are in `config/benchmark_suites/`:
+
+```text
+smoke, baseline_comparison, latency_sweep, noise_sweep,
+dropout_sweep, gate_ablation
+```
+
+Run a plan-only smoke campaign after sourcing the ROS workspace overlay:
+
+```bash
+ros2 run foam_grasp_sim run_sim_benchmark smoke \
+  --results-root results --max-trials 1
+```
+
+Inspect the exact resolved command without starting ROS or Gazebo:
+
+```bash
+ros2 run foam_grasp_sim run_sim_benchmark smoke --dry-run --max-trials 1
+```
+
+Each suite uses this schema. `methods`, `trajectories`, and `seeds` are
+explicit expansion dimensions. Every `sweeps` item has exactly one parameter;
+items are concatenated as independent alternatives, never multiplied. A
+multi-axis mapping or nested Cartesian list is rejected.
+
+```yaml
+schema_version: 1
+name: example
+defaults: {target_model: cube, execute_motion: false}
+methods: [snapshot, tracking, gated]
+trajectories: [static]
+seeds: [42]
+sweeps:
+  - parameter: latency_ms
+    values: [0.0, 50.0, 100.0]
+```
+
+Resolved conditions are canonicalized as sorted-key JSON. `config_hash` is its
+SHA-256. `pair_id` hashes the same condition with `method` removed, so paired
+methods sharing condition and seed use the same ID. `run_id` is a deterministic
+readable prefix plus the config-hash prefix. Paired methods must have identical
+motion, trajectory, seed, target, execution mode, and perception/measurement
+disturbances.
+
+Campaign output is:
+
+```text
+results/<campaign_id>/
+  campaign.json
+  trials.csv
+  logs/<run_id>.log
+  runs/<run_id>/
+    metadata.json
+    states.csv
+    events.csv
+    metrics.json
+```
+
+`campaign.json` and `trials.csv` are updated atomically. Failed, timed-out,
+interrupted, and incomplete trials retain logs and partial result files.
+`--resume --campaign-id <id>` skips only finished trials with all four run
+artifacts. `--rerun-failed --campaign-id <id>` uses deterministic
+`__attempt-002`-style names and never overwrites an earlier attempt.
+`--max-trials` truncates the already deterministic queue.
+
+Terminal events are distinct from task events:
+
+- `TRIAL_FINISHED` means the program trial completed normally. In plan-only
+  mode it follows `PLAN_SUCCEEDED` while `task_success` remains false.
+- `TRIAL_FAILED` records a program, planning, safety, or timeout failure.
+- `TASK_FINISHED` still means the simulated/real mechanical grasp and lift
+  succeeded; it is never synthesized from plan-only success.
+
+Each launch is started in its own process group. On terminal event, timeout, or
+interruption the runner signals only that group in order: SIGINT, SIGTERM, then
+SIGKILL after bounded grace periods. It never calls global `pkill ros2`,
+`pkill gazebo`, or kills processes it did not start.
+
+Stage 6 stops at reproducible orchestration and raw run artifacts. RGB-D
+integration, offline analysis, plotting, and the complete paper benchmark
+matrix remain outside this workflow.
