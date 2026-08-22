@@ -61,6 +61,9 @@ class MetricsLoggerNode(Node):
         self.declare_parameter("tool_offset", 0.1358)
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("tcp_frame", "link6")
+        self.declare_parameter("config_hash", "")
+        self.declare_parameter("pair_id", "")
+        self.declare_parameter("condition_json", "{}")
 
         self.scenario = str(self.get_parameter("scenario").value)
         self.method = str(self.get_parameter("method").value)
@@ -70,6 +73,9 @@ class MetricsLoggerNode(Node):
         self.tool_offset = float(self.get_parameter("tool_offset").value)
         self.base_frame = str(self.get_parameter("base_frame").value)
         self.tcp_frame = str(self.get_parameter("tcp_frame").value)
+        self.config_hash = str(self.get_parameter("config_hash").value)
+        self.pair_id = str(self.get_parameter("pair_id").value)
+        self.condition_json = str(self.get_parameter("condition_json").value)
         if not 0.1 <= self.metrics_rate <= 100.0:
             raise RuntimeError("metrics_rate must be within 0.1--100 Hz")
         if not 0.0 <= self.tool_offset <= 0.30:
@@ -244,6 +250,9 @@ class MetricsLoggerNode(Node):
             "tool_offset_m": self.tool_offset,
             "base_frame": self.base_frame,
             "tcp_frame": self.tcp_frame,
+            "config_hash": self.config_hash,
+            "pair_id": self.pair_id,
+            "condition_json": self.condition_json,
         }
         self._atomic_write(
             self.run_dir / "metadata.json",

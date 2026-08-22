@@ -318,6 +318,9 @@ def generate_launch_description():
                 "seed": _parameter("seed", int),
                 "metrics_rate": _parameter("metrics_rate", float),
                 "tool_offset": 0.1358,
+                "config_hash": LaunchConfiguration("config_hash"),
+                "pair_id": LaunchConfiguration("pair_id"),
+                "condition_json": LaunchConfiguration("condition_json"),
             }
         ],
         condition=IfCondition(
@@ -419,6 +422,9 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "metrics_rate", default_value="10.0"
             ),
+            DeclareLaunchArgument("config_hash", default_value=""),
+            DeclareLaunchArgument("pair_id", default_value=""),
+            DeclareLaunchArgument("condition_json", default_value="{}"),
             DeclareLaunchArgument(
                 "trajectory",
                 default_value=str(motion["trajectory"]),
