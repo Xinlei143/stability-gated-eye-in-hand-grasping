@@ -9,6 +9,9 @@ import rclpy
 from geometry_msgs.msg import PointStamped, Pose
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.time import Time
+from tf2_geometry_msgs import do_transform_point
+from tf2_ros import Buffer, TransformException, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -59,43 +62,66 @@ class FoamCameraToBaseNode(Node):
         self.declare_parameter("calibration_file", "")
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("end_pose_timeout", 1.0)
+        self.declare_parameter("transform_source", "calibration")
+        self.declare_parameter("tf_timeout", 0.2)
 
+        self.transform_source = str(
+            self.get_parameter("transform_source").value
+        ).strip().lower()
+        if self.transform_source not in {"calibration", "tf"}:
+            raise RuntimeError(
+                "transform_source must be either 'calibration' or 'tf'"
+            )
         calibration_file = str(
             self.get_parameter("calibration_file").value
         )
-        if not calibration_file:
-            raise RuntimeError("calibration_file parameter is required")
         self.base_frame = str(self.get_parameter("base_frame").value)
         self.end_pose_timeout = float(
             self.get_parameter("end_pose_timeout").value
         )
-
-        with open(calibration_file, "r", encoding="utf-8") as file:
-            calibration = json.load(file)
-
-        self.translation_gripper_camera = tuple(
-            float(value) for value in calibration["position"]
-        )
-        self.quaternion_gripper_camera = normalize_quaternion(
-            tuple(float(value) for value in calibration["orientation"])
-        )
-
-        if len(self.translation_gripper_camera) != 3:
-            raise RuntimeError("Calibration position must contain 3 values")
-        if len(self.quaternion_gripper_camera) != 4:
-            raise RuntimeError("Calibration orientation must contain 4 values")
+        self.tf_timeout = float(self.get_parameter("tf_timeout").value)
+        if not math.isfinite(self.tf_timeout) or self.tf_timeout <= 0.0:
+            raise RuntimeError("tf_timeout must be a finite positive number")
 
         self.end_pose = None
         self.end_pose_received_at = None
+        self.tf_buffer = None
+        self.tf_listener = None
+
+        if self.transform_source == "calibration":
+            if not calibration_file:
+                raise RuntimeError("calibration_file parameter is required")
+
+            with open(calibration_file, "r", encoding="utf-8") as file:
+                calibration = json.load(file)
+
+            self.translation_gripper_camera = tuple(
+                float(value) for value in calibration["position"]
+            )
+            self.quaternion_gripper_camera = normalize_quaternion(
+                tuple(float(value) for value in calibration["orientation"])
+            )
+
+            if len(self.translation_gripper_camera) != 3:
+                raise RuntimeError("Calibration position must contain 3 values")
+            if len(self.quaternion_gripper_camera) != 4:
+                raise RuntimeError("Calibration orientation must contain 4 values")
+
+        else:
+            self.tf_buffer = Buffer()
+            self.tf_listener = TransformListener(self.tf_buffer, self)
+
         self.latest_base_points = {}
         self.last_warning_time = 0.0
 
-        self.end_pose_subscription = self.create_subscription(
-            Pose,
-            "/end_pose",
-            self.end_pose_callback,
-            10,
-        )
+        self.end_pose_subscription = None
+        if self.transform_source == "calibration":
+            self.end_pose_subscription = self.create_subscription(
+                Pose,
+                "/end_pose",
+                self.end_pose_callback,
+                10,
+            )
 
         self.point_publishers = {
             class_id: self.create_publisher(
@@ -126,12 +152,17 @@ class FoamCameraToBaseNode(Node):
         )
         self.log_timer = self.create_timer(1.0, self.log_points)
 
-        self.get_logger().info(
-            f"Loaded eye-in-hand calibration: {calibration_file}"
-        )
-        self.get_logger().info(
-            "Transform chain: base <- gripper <- camera"
-        )
+        if self.transform_source == "calibration":
+            self.get_logger().info(
+                f"Loaded eye-in-hand calibration: {calibration_file}"
+            )
+            self.get_logger().info(
+                "Transform chain: base <- gripper <- camera"
+            )
+        else:
+            self.get_logger().info(
+                "Transform chain: TF base frame <- PointStamped frame"
+            )
         self.get_logger().info(
             "Outputs: /foam_grasp/cube_point_base, "
             "/foam_grasp/cylinder_point_base, "
@@ -149,6 +180,10 @@ class FoamCameraToBaseNode(Node):
             self.last_warning_time = now
 
     def point_callback(self, class_id, message):
+        if self.transform_source == "tf":
+            self.tf_point_callback(class_id, message)
+            return
+
         if self.end_pose is None or self.end_pose_received_at is None:
             self.warn_missing_pose("Waiting for Piper /end_pose")
             return
@@ -201,6 +236,66 @@ class FoamCameraToBaseNode(Node):
         output.point.x = float(base_point[0])
         output.point.y = float(base_point[1])
         output.point.z = float(base_point[2])
+        self.point_publishers[class_id].publish(output)
+
+        marker = Marker()
+        marker.header = output.header
+        marker.ns = "foam_targets_in_base"
+        marker.id = int(class_id)
+        marker.type = Marker.SPHERE
+        marker.action = Marker.ADD
+        marker.pose.position = output.point
+        marker.pose.orientation.w = 1.0
+        marker.scale.x = 0.04
+        marker.scale.y = 0.04
+        marker.scale.z = 0.04
+        red, green, blue = CLASS_COLORS[class_id]
+        marker.color.r = red
+        marker.color.g = green
+        marker.color.b = blue
+        marker.color.a = 1.0
+        marker.lifetime = Duration(seconds=0.30).to_msg()
+
+        marker_array = MarkerArray()
+        marker_array.markers.append(marker)
+        self.marker_publisher.publish(marker_array)
+
+    def tf_point_callback(self, class_id, message):
+        source_frame = str(message.header.frame_id).strip()
+        if not source_frame:
+            self.warn_missing_pose(
+                "Cannot transform PointStamped without a source frame"
+            )
+            return
+
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                self.base_frame,
+                source_frame,
+                Time.from_msg(message.header.stamp),
+                timeout=Duration(seconds=self.tf_timeout),
+            )
+            transformed = do_transform_point(message, transform)
+        except (TransformException, TypeError, ValueError) as error:
+            self.warn_missing_pose(
+                "TF unavailable for "
+                f"{source_frame} -> {self.base_frame}: {error}"
+            )
+            return
+
+        base_point = (
+            float(transformed.point.x),
+            float(transformed.point.y),
+            float(transformed.point.z),
+        )
+        self.latest_base_points[class_id] = base_point
+
+        output = PointStamped()
+        output.header.stamp = message.header.stamp
+        output.header.frame_id = self.base_frame
+        output.point.x = base_point[0]
+        output.point.y = base_point[1]
+        output.point.z = base_point[2]
         self.point_publishers[class_id].publish(output)
 
         marker = Marker()

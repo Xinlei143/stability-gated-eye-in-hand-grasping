@@ -15,6 +15,10 @@ python3 -m py_compile \
   "${PROJECT_ROOT}"/workspaces/app_ws/src/foam_grasp/foam_grasp/*.py \
   "${PROJECT_ROOT}"/workspaces/app_ws/src/foam_grasp/launch/*.launch.py \
   "${PROJECT_ROOT}"/workspaces/app_ws/src/foam_grasp/setup.py \
+  "${PROJECT_ROOT}"/workspaces/app_ws/src/foam_grasp_sim/foam_grasp_sim/*.py \
+  "${PROJECT_ROOT}"/workspaces/app_ws/src/foam_grasp_sim/launch/*.launch.py \
+  "${PROJECT_ROOT}"/workspaces/app_ws/src/foam_grasp_sim/setup.py \
+  "${PROJECT_ROOT}"/analysis/*.py \
   "${PROJECT_ROOT}"/training/*.py
 
 if grep -RnsE \

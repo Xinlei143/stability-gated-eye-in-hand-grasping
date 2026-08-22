@@ -86,6 +86,85 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn('"allow_trajectory_execution": False', moveit)
         self.assertNotIn("joint_states_single", moveit)
 
+    def test_eye_in_hand_xacro_declares_rgbd_sensor_and_optical_frames(self):
+        path = PACKAGE_ROOT / "urdf" / "piper_eye_in_hand_gazebo.xacro"
+        root = ET.parse(path).getroot()
+        self.assertEqual(root.tag, "robot")
+        include = root.find("{http://www.ros.org/wiki/xacro}include")
+        self.assertIsNotNone(include)
+        self.assertIn("piper_description_gazebo.xacro", include.attrib["filename"])
+
+        links = {link.attrib["name"] for link in root.findall("link")}
+        self.assertTrue(
+            {
+                "camera_link",
+                "camera_color_frame",
+                "camera_color_optical_frame",
+                "camera_depth_frame",
+                "camera_depth_optical_frame",
+            }.issubset(links)
+        )
+        joints = {
+            joint.attrib["name"]: (
+                joint.find("parent").attrib["link"],
+                joint.find("child").attrib["link"],
+            )
+            for joint in root.findall("joint")
+        }
+        self.assertEqual(joints["camera_mount_joint"], ("link6", "camera_link"))
+        self.assertEqual(
+            joints["camera_color_optical_joint"],
+            ("camera_color_frame", "camera_color_optical_frame"),
+        )
+        self.assertEqual(
+            joints["camera_depth_optical_joint"],
+            ("camera_depth_frame", "camera_depth_optical_frame"),
+        )
+
+        sensor = root.find("gazebo/sensor")
+        self.assertIsNotNone(sensor)
+        self.assertEqual(sensor.attrib["type"], "depth")
+        self.assertEqual(sensor.findtext("update_rate"), "15")
+        self.assertEqual(sensor.findtext("camera/image/width"), "640")
+        self.assertEqual(sensor.findtext("camera/image/height"), "360")
+        self.assertIsNotNone(sensor.find("camera/depth_camera"))
+        plugin = sensor.find("plugin")
+        self.assertIsNotNone(plugin)
+        self.assertEqual(plugin.attrib["filename"], "libgazebo_ros_camera.so")
+        remappings = {
+            item.text for item in plugin.findall("ros/remapping") if item.text
+        }
+        self.assertIn(
+            "eye_in_hand_rgbd/image_raw:=color/image_raw", remappings
+        )
+        self.assertIn(
+            "eye_in_hand_rgbd/depth/image_raw:=depth/image_raw", remappings
+        )
+        self.assertIn(
+            "eye_in_hand_rgbd/camera_info:=color/camera_info", remappings
+        )
+        self.assertIn(
+            "eye_in_hand_rgbd/depth/camera_info:=depth/camera_info", remappings
+        )
+
+    def test_piper_launch_accepts_a_robot_xacro_override(self):
+        piper = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
+        self.assertIn('"robot_xacro",', piper)
+        self.assertIn('LaunchConfiguration("robot_xacro")', piper)
+        self.assertIn("default_value=str(default_robot_xacro)", piper)
+
+    def test_sim_bringup_forwards_robot_xacro_to_piper_launch(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        self.assertIn('LaunchConfiguration("robot_xacro")', bringup)
+        self.assertIn('"robot_xacro": robot_xacro', bringup)
+
+    def test_eye_in_hand_urdf_is_installed_with_gazebo_plugins_dependency(self):
+        setup = (PACKAGE_ROOT / "setup.py").read_text()
+        package = (PACKAGE_ROOT / "package.xml").read_text()
+        self.assertIn('"share/" + package_name + "/urdf"', setup)
+        self.assertIn('glob("urdf/*.xacro")', setup)
+        self.assertIn("<exec_depend>gazebo_plugins</exec_depend>", package)
+
     def test_table_model_matches_scene_config(self):
         config = yaml.safe_load(
             (PACKAGE_ROOT / "config" / "simulation.yaml").read_text()

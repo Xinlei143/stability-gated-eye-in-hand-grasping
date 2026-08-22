@@ -21,6 +21,7 @@ setup(
             "share/" + package_name + "/config/benchmark_suites",
             glob("config/benchmark_suites/*.yaml"),
         ),
+        ("share/" + package_name + "/urdf", glob("urdf/*.xacro")),
         ("share/" + package_name + "/worlds", glob("worlds/*")),
         ("share/" + package_name + "/models/table", ["models/table/model.sdf"]),
         ("share/" + package_name + "/models/cube", ["models/cube/model.sdf"]),

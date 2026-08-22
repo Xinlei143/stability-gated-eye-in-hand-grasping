@@ -46,10 +46,16 @@ patches/                        minimal upstream patches
 runtime/                        model/calibration instructions and model card
 scripts/                        installation, validation, and release helpers
 training/                       capture, labeling, training, and evaluation scripts
-workspaces/app_ws/              the foam_grasp ROS 2 package
+workspaces/app_ws/              the foam_grasp and foam_grasp_sim ROS 2 packages
+analysis/                       read-only campaign summaries and plots
 ```
 
 Raw images, LabelMe annotations, generated masks, training runs, rosbag files, model checkpoints, and hardware calibration JSON are not committed to ordinary Git history. See `data/README.md` and `runtime/models/README.md` or `runtime/calibration/README.md` for the intended release channels.
+
+The Gazebo benchmark runner and simulated eye-in-hand RGB-D composition are
+documented in [`docs/SIMULATION_BENCHMARK.md`](docs/SIMULATION_BENCHMARK.md).
+Analysis tools consume campaign artifacts only and write to a separate
+`<campaign_id>-analysis/` directory.
 
 ## Requirements
 

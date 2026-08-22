@@ -1,4 +1,4 @@
-# Gazebo benchmark contract (Stage 4/5/6)
+# Gazebo benchmark and RGB-D contract (Stage 4/5/6/7)
 
 `sim_bringup.launch.py` is the single entry point for the controlled Gazebo
 trial.  The method layer is now the only target gate in simulation:
@@ -161,3 +161,55 @@ SIGKILL after bounded grace periods. It never calls global `pkill ros2`,
 Stage 6 stops at reproducible orchestration and raw run artifacts. RGB-D
 integration, offline analysis, plotting, and the complete paper benchmark
 matrix remain outside this workflow.
+
+## Stage 7 simulated eye-in-hand RGB-D pipeline
+
+`full_pipeline.launch.py` composes the existing trial with the real RGB-D
+nodes. It always includes `sim_bringup.launch.py`; it does not clone the
+Gazebo scene, target-motion node, method policy, or grasp sequence.
+
+```bash
+ros2 launch foam_grasp_sim full_pipeline.launch.py \
+  checkpoint:=/absolute/path/to/best_model.pth \
+  require_cuda:=true target_model:=cube method:=gated \
+  trajectory:=static execute_motion:=false use_rviz:=false
+```
+
+The eye-in-hand Xacro is selected by `robot_xacro` and adds a fixed
+`camera_link` near the link6 tool axis plus color/depth optical frames and a
+640x360, 15 Hz Gazebo depth sensor. The plugin publishes
+`/camera/color/image_raw`, `/camera/depth/image_raw`, and
+`/camera/depth/camera_info`. `foam_camera_to_base_node` uses
+`transform_source:=tf` in this launch and looks up the stamped source frame in
+the robot TF tree. The real `system.launch.py` remains calibration mode.
+
+The simulation camera transform is an explicit integration fixture, not a
+physical hand-eye calibration. Before claiming end-to-end success, verify RGB,
+depth, CameraInfo, TF, mask, camera-frame points, base-frame points, method
+`READY`, `PLAN_SUCCEEDED`, and the terminal event in that order. A plan-only
+trial ends with `TRIAL_FINISHED` and `task_success=false`; only an executed
+grasp may emit `TASK_FINISHED`.
+
+## Offline Stage 7 analysis
+
+Analysis tools read standard campaign artifacts and never rewrite the raw
+campaign. By default they write to a sibling directory `<campaign_id>-analysis/`
+(override with `--output-dir`):
+
+```bash
+PYTHONPATH=. python3 -m analysis.summarize results/smoke-...
+PYTHONPATH=. python3 -m analysis.plot_latency_sweep results/latency-...
+PYTHONPATH=. python3 -m analysis.plot_noise_sweep results/noise-...
+PYTHONPATH=. python3 -m analysis.plot_gate_ablation results/gate-...
+PYTHONPATH=. python3 -m analysis.make_result_table results/baseline-...
+```
+
+Outputs include `run_metrics.csv`, `group_summary.csv`,
+`paired_differences.csv`, `excluded_runs.csv`, deterministic bootstrap
+confidence intervals (seed 2026), and PNG/PDF/CSV plot data where relevant.
+Malformed metrics and incomplete/failed runs are listed in `excluded_runs.csv`,
+never silently treated as successes. Paired results are reported as
+`gated - snapshot` and `gated - tracking` by `pair_id`.
+
+Stage 7 does not add RGB-D domain adaptation, retraining, ground-truth
+shortcuts, statistical claims, or the complete paper benchmark matrix.
