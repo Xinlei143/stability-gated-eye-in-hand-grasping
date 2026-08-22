@@ -118,5 +118,22 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertEqual(rows[0]["status"], "timed_out")
             self.assertTrue(Path(rows[0]["log_path"]).is_file())
 
+    def test_resume_skips_finished_complete_trial(self):
+        class NeverStart:
+            def __call__(self, *args, **kwargs):
+                raise AssertionError("resume relaunched a complete trial")
+        with tempfile.TemporaryDirectory() as directory:
+            campaign = Path(directory) / "campaign"
+            runner = CampaignRunner(_specs(), campaign, popen_factory=NeverStart())
+            spec = _specs()[0]
+            run_dir = campaign / "runs" / spec.run_id
+            run_dir.mkdir(parents=True)
+            for name in ("metadata.json", "states.csv", "events.csv", "metrics.json"):
+                (run_dir / name).write_text("{}")
+            runner.rows[spec.run_id] = dict(runner._base_row(spec), status="finished", artifacts_complete="true")
+            runner._write_rows()
+            rows = runner.run(suite_name="runner-unit", suite_hash="x", resume=True)
+            self.assertEqual(rows, [])
+
 if __name__ == "__main__":
     unittest.main()
