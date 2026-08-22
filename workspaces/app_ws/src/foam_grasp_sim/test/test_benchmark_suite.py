@@ -112,6 +112,13 @@ class BenchmarkSuiteTest(unittest.TestCase):
             if name == "baseline_comparison":
                 self.assertEqual({trial.method for trial in trials}, {"snapshot", "tracking", "gated"})
 
+    def test_standard_suites_have_unique_deterministic_run_ids(self):
+        root = Path(__file__).resolve().parents[1] / "config" / "benchmark_suites"
+        for path in sorted(root.glob("*.yaml")):
+            trials = expand_suite(load_suite(path))
+            run_ids = [trial.run_id for trial in trials]
+            self.assertEqual(len(run_ids), len(set(run_ids)), path.name)
+
 
 if __name__ == "__main__":
     unittest.main()

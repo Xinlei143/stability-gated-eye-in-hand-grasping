@@ -22,6 +22,9 @@ jobs:
           python3 -m py_compile \
             workspaces/app_ws/src/foam_grasp/foam_grasp/*.py \
             workspaces/app_ws/src/foam_grasp/launch/*.launch.py \
+            workspaces/app_ws/src/foam_grasp_sim/foam_grasp_sim/*.py \
+            workspaces/app_ws/src/foam_grasp_sim/launch/*.launch.py \
+            analysis/*.py \
             training/*.py
       - name: No generated or secret runtime files
         run: |

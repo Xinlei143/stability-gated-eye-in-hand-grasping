@@ -1,6 +1,6 @@
 # 工程文件清单
 
-本清单定义 Foam Grasp 0.1.0 的工程边界。项目分为“Git 源码”“GitHub
+本清单定义 Foam Grasp 1.0.0 的工程边界。项目分为“Git 源码”“GitHub
 Release运行资产”“可重建第三方依赖”和“生成产物”四类。
 
 ## 1. 应进入 Git 的工程源码
@@ -27,8 +27,10 @@ foam_grasp_project/
 ├── scripts/                         # 安装、构建、启动、抓取、打包
 ├── install.sh                       # 新电脑一键软件部署
 ├── training/                        # 采集、标注转换、划分、训练、测试
+├── analysis/                        # 只读 benchmark 汇总、配对差异和绘图
 ├── workspaces/
-│   ├── app_ws/src/foam_grasp/       # 唯一自研ROS 2包
+│   ├── app_ws/src/foam_grasp/       # 真机感知与抓取 ROS 2包
+│   ├── app_ws/src/foam_grasp_sim/   # Gazebo、benchmark runner 与 RGB-D 仿真
 │   ├── orbbec_ws/src/.gitkeep
 │   ├── piper_ws/src/.gitkeep
 │   └── moveit_ws/src/.gitkeep
@@ -57,6 +59,16 @@ foam_grasp_project/
 | `foam_cube_grasp_sequence.py` | 三类别自适应姿态搜索和完整抓取状态机 |
 | `foam_grasp_*_check.py` | IK、完整路径、笛卡尔路径只读检查 |
 | `piper_gripper_safe_test.py` | 保持六轴不变的夹爪专项测试 |
+
+`workspaces/app_ws/src/foam_grasp_sim` 的 Stage 6/7 接口包括：
+
+| 文件 | 职责 |
+|---|---|
+| `launch/sim_bringup.launch.py` | 唯一单次 Gazebo trial 入口 |
+| `launch/full_pipeline.launch.py` | 外层 RGB-D 感知与仿真组合 |
+| `urdf/piper_eye_in_hand_gazebo.xacro` | link6 工具轴上的 RGB-D 相机 fixture |
+| `foam_grasp_sim/benchmark_suite.py` | YAML 校验、确定性展开与配对 ID |
+| `foam_grasp_sim/experiment_runner.py` | 顺序 campaign、超时、恢复与归档 |
 
 ## 2. 不进入普通 Git、由 GitHub Release 提供
 
