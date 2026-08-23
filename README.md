@@ -1,6 +1,6 @@
 # Stability-Gated Closed-Loop Eye-in-Hand Tracking and Grasping
 
-ROS 2 research code for semantic RGB-D perception, continuous target tracking, and safety-gated Piper grasping of a manually moved target.
+ROS 2 research code for stability-gated closed-loop eye-in-hand tracking and grasping, combining semantic RGB-D perception, Piper manipulation, Gazebo/MoveIt simulation, and reproducible benchmark evaluation under target motion and perception disturbances.
 
 This repository accompanies an **IEEE EPIC 2026 short-paper submission**. It is research software, not a certified industrial safety controller. Test in plan-only mode first, keep the workspace clear, provide an emergency stop, and verify every motion on the actual robot before enabling actuation.
 
@@ -14,26 +14,60 @@ The paper is not described as accepted or published. Citation information will b
 
 ## Project provenance
 
-This project was jointly developed by Zhang Yue and Wei Liu. An earlier version of the shared codebase, including contributions from both collaborators, was published under Wei Liu's GitHub account at [`WillLiu322/foam-grasp-ros2`](https://github.com/WillLiu322/foam-grasp-ros2). The present repository contains the complete codebase for the subsequent closed-loop tracking and grasping work and is released and maintained by Zhang Yue with Wei Liu's permission.
+The original project was developed through collaboration between Zhang Yue and Wei Liu. An earlier version of the shared codebase, including contributions from both collaborators, was published under Wei Liu's GitHub account at [`WillLiu322/foam-grasp-ros2`](https://github.com/WillLiu322/foam-grasp-ros2). That repository predates the present repository and already contained major components of the robotic grasping system, including semantic RGB-D perception, camera-to-base target localization, MoveIt-based motion planning and validation, target latching, and the Piper grasp-execution pipeline. The codebase was subsequently provided for the present study with Wei Liu's permission.
 
-The continuous target-tracking and stability-gated tracking-to-grasp control scheme presented in the current work was proposed by Zhang Yue. Wei Liu provided the Piper manipulator and RGB-D experimental platform and collaborated on the development and validation of the system.
+The continuous target-tracking and stability-gated tracking-to-grasp study direction presented in the associated manuscript was proposed by Zhang Yue, who leads the manuscript preparation and serves as first author. Wei Liu provided the Piper manipulator and RGB-D experimental platform and collaborated on the development and validation of the physical system.
 
-The provenance statement above describes collaboration history and does not add Wei Liu to the paper author list.
+Building on the pre-existing grasping pipeline, Xinlei Lin led the subsequent software implementation and evaluation development in this repository, including the real/simulation execution abstraction, Gazebo and MoveIt simulation infrastructure, moving-target and simulated-perception models, snapshot/tracking/gated method-policy integration, benchmark orchestration, latency/noise/dropout evaluation, metrics and offline statistical analysis, simulated eye-in-hand RGB-D integration, and end-to-end simulation grasp validation. These contributions are documented in the repository history, primarily through PRs #1–#10.
+
+The present repository therefore combines the pre-existing robotic grasping system, the stability-gated tracking study direction, and the subsequent simulation, benchmarking, integration, and evaluation software developed for the current work.
+
+The provenance statement above describes collaboration and software-development history and does not determine the authorship of the associated manuscript.
 
 ## System scope
 
-The implementation includes:
+### Physical perception and grasping pipeline
 
-- RGB-D fusion and semantic segmentation of cube, cylinder, and sphere classes;
-- eye-in-hand camera-to-base-frame localization;
-- continuous selected-class target following with filtered polar displacement;
-- bounded joint-rate servoing with preflight workspace and MoveIt IK/collision checks;
-- a continuous 5 s stability/readiness gate, stable-sample relatching, and path validation;
-- operator safety authorization and an execution token before physical `GRASP -> LIFT`.
+The physical-system pipeline includes:
+
+- semantic RGB-D perception for cube, cylinder, and sphere classes;
+- depth fusion and eye-in-hand camera-to-base target localization;
+- MoveIt-based IK, collision checking, and grasp-path validation;
+- continuous selected-class target following with bounded joint-rate servoing;
+- stability-gated target commitment and grasp readiness;
+- operator-authorized physical `GRASP -> LIFT` execution with explicit safety checks.
 
 The 5 s gate only authorizes `HOLD/readiness`; it does not automatically start a physical grasp. The operator must confirm that the workspace is clear and issue the execution command.
 
-The current evidence does not establish motion prediction, same-class distractor rejection, repeated-trial grasp success, or statistical superiority over a baseline.
+### Simulation and evaluation framework
+
+The repository also includes a reproducible Gazebo/MoveIt simulation and evaluation framework for closed-loop target tracking and grasping:
+
+- `snapshot`, `tracking`, and `gated` method policies under a common evaluation interface;
+- moving-target and simulated-perception models with configurable latency, noise, and dropout;
+- simulated eye-in-hand RGB-D perception using the same perception/localization pipeline as the physical system;
+- deterministic benchmark campaigns with paired seeds and configurations;
+- baseline comparison, latency sweep, noise sweep, dropout sweep, and gate-ablation suites;
+- run-level telemetry and metrics for tracking error, readiness error, grasp-initiation error, time-to-ready, gate resets, planning success, and task success;
+- offline paired analysis, deterministic bootstrap confidence intervals, result tables, and publication-oriented plots.
+
+## Reproducible simulation and benchmarking
+
+The simulation framework provides controlled evaluation of three target-selection and tracking policies:
+
+- `snapshot`: commits the first valid target observation;
+- `tracking`: continuously follows the latest target estimate with bounded replanning;
+- `gated`: commits a target only after the configured stability criteria are satisfied.
+
+Packaged benchmark suites cover baseline comparison, latency, perception noise, observation dropout, and stability-gate ablations. Trials use deterministic configuration hashes and paired seeds so methods can be compared under matched target trajectories and disturbance conditions.
+
+Each run records target ground truth, observations, selected and committed targets, TCP state, joint state, readiness, and execution events. Offline analysis produces run-level metrics, grouped summaries, paired method differences, deterministic bootstrap confidence intervals, and publication-oriented plots.
+
+See [`docs/SIMULATION_BENCHMARK.md`](docs/SIMULATION_BENCHMARK.md) for the complete benchmark contract and reproduction commands.
+
+## Current limitations
+
+The current repository provides the infrastructure for controlled baseline comparisons and repeated simulation campaigns, but no claim of statistical superiority is made here unless supported by completed experimental results. The current system also does not establish motion prediction, same-class distractor rejection, or repeated-trial physical grasp success.
 
 ## Repository layout
 
@@ -46,25 +80,32 @@ patches/                        minimal upstream patches
 runtime/                        model/calibration instructions and model card
 scripts/                        installation, validation, and release helpers
 training/                       capture, labeling, training, and evaluation scripts
-workspaces/app_ws/              the foam_grasp and foam_grasp_sim ROS 2 packages
-analysis/                       read-only campaign summaries and plots
+workspaces/app_ws/              physical foam_grasp and Gazebo/benchmark foam_grasp_sim ROS 2 packages
+analysis/                       offline metrics, paired comparisons, bootstrap CIs, tables, and plots
 ```
 
 Raw images, LabelMe annotations, generated masks, training runs, rosbag files, model checkpoints, and hardware calibration JSON are not committed to ordinary Git history. See `data/README.md` and `runtime/models/README.md` or `runtime/calibration/README.md` for the intended release channels.
 
-The Gazebo benchmark runner and simulated eye-in-hand RGB-D composition are
-documented in [`docs/SIMULATION_BENCHMARK.md`](docs/SIMULATION_BENCHMARK.md).
 Analysis tools consume campaign artifacts only and write to a separate
 `<campaign_id>-analysis/` directory.
 
 ## Requirements
 
+### Simulation and benchmark workflow
+
 - Ubuntu 22.04 LTS
 - ROS 2 Humble
-- NVIDIA driver and a compatible CUDA/PyTorch environment for segmentation
+- Gazebo and MoveIt 2
+- Python dependencies listed in the repository
+- NVIDIA CUDA/PyTorch environment only when running the semantic-segmentation RGB-D pipeline
+
+### Physical-system workflow
+
+In addition to the software requirements above:
+
 - Piper manipulator and gripper
 - Orbbec DaBai DC1 RGB-D camera
-- MoveIt 2 and the dependency workspaces listed in `dependencies/*.repos`
+- verified hand-eye calibration and rig-specific runtime assets
 
 ## Installation and validation
 
