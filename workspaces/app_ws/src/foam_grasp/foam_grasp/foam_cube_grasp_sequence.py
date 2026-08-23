@@ -1650,10 +1650,10 @@ def main(argv=None):
             args.effort,
             args.tracking_limit,
         )
-        node.emit_event("TASK_FINISHED", details={"target_class": args.target_class})
+        node.emit_event("EXECUTION_FINISHED", details={"target_class": args.target_class})
         node.emit_event(
             "TRIAL_FINISHED",
-            details={"execution_mode": "execute", "task_success": True},
+            details={"execution_mode": "execute"},
         )
         terminal_emitted = True
         node.spin_for(0.2)

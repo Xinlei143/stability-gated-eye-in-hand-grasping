@@ -45,6 +45,7 @@ _KNOWN_DEFAULTS = {
     "metrics_rate", "record_benchmark", "run_grasp_pipeline", "use_rviz",
     "perception_source", "outlier_range_mm", "scenario", "target_timeout",
     "timeout_s", "grasp_assist_mode", "grasp_assist_service",
+    "grasp_stabilization_mode",
     "record_contact_diagnostics", "post_close_hold_s",
     "auto_pause_s",
     "countdown_seconds",
@@ -157,6 +158,13 @@ def _validate_suite(raw: Mapping[str, Any]) -> dict[str, Any]:
     unknown_defaults = set(defaults) - _KNOWN_DEFAULTS
     if unknown_defaults:
         raise _error("defaults", "unknown key(s): " + ", ".join(sorted(unknown_defaults)))
+    stabilization_mode = str(defaults.get("grasp_stabilization_mode", "off")).strip().lower()
+    if stabilization_mode not in {"off", "gazebo_grasp_fix", "legacy_contact_confirmed"}:
+        raise _error("defaults.grasp_stabilization_mode", "is not a supported stabilization mode")
+    assist_mode = str(defaults.get("grasp_assist_mode", "off")).strip().lower()
+    assist_service = str(defaults.get("grasp_assist_service", "")).strip()
+    if stabilization_mode == "gazebo_grasp_fix" and (assist_mode != "off" or assist_service):
+        raise _error("defaults", "gazebo_grasp_fix and legacy grasp assist are mutually exclusive")
     methods = raw["methods"]
     trajectories = raw["trajectories"]
     seeds = raw["seeds"]
@@ -249,6 +257,7 @@ def _launch_args(resolved: Mapping[str, Any], run_id: str, results_root: str) ->
         "observation_timeout", "metrics_rate", "tracking_commit_timeout",
         "tracking_replan_threshold", "tracking_commit_tolerance", "tracking_max_updates",
         "grasp_assist_mode", "grasp_assist_service",
+        "grasp_stabilization_mode",
         "record_contact_diagnostics", "post_close_hold_s",
         "auto_pause_s",
         "countdown_seconds",

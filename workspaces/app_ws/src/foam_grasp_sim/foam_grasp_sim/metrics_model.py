@@ -180,12 +180,12 @@ class MetricsAccumulator:
         planning_success = any(
             event.get("event") == "PLAN_SUCCEEDED" for event in self.events
         )
-        task_success = any(
-            event.get("event") == "TASK_FINISHED" for event in self.events
+        execution_completed = any(
+            event.get("event") in {"EXECUTION_FINISHED", "TASK_FINISHED"}
+            for event in self.events
         )
         physical_success, lift_height_m, grasp_hold_s = self._physical_grasp_outcome()
-        if task_success:
-            task_success = physical_success
+        task_success = execution_completed and physical_success
         terminal_events = [
             event for event in self.events
             if event.get("event") in {"TRIAL_FINISHED", "TRIAL_FAILED"}
@@ -215,6 +215,7 @@ class MetricsAccumulator:
             ),
             "gate_resets": int(reset_count),
             "planning_success": bool(planning_success),
+            "execution_completed": bool(execution_completed),
             "task_success": bool(task_success),
             "physical_grasp_success": bool(physical_success),
             "lift_height_m": lift_height_m,

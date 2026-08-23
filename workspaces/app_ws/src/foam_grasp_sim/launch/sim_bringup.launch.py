@@ -9,6 +9,7 @@ from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
+    OpaqueFunction,
     RegisterEventHandler,
     Shutdown,
     TimerAction,
@@ -19,6 +20,8 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+
+from foam_grasp_sim.grasp_stabilization import resolve_stabilization_mode
 
 
 TARGET_MODELS = ("cube", "cylinder", "sphere")
@@ -86,6 +89,15 @@ def _parameter(name, value_type):
     return ParameterValue(LaunchConfiguration(name), value_type=value_type)
 
 
+def _validate_stabilization_configuration(context):
+    resolve_stabilization_mode(
+        context.launch_configurations.get("grasp_stabilization_mode", "off"),
+        context.launch_configurations.get("grasp_assist_mode", "off"),
+        context.launch_configurations.get("grasp_assist_service", ""),
+    )
+    return []
+
+
 def generate_launch_description():
     package_share = get_package_share_directory("foam_grasp_sim")
     description_share = get_package_share_directory("piper_description")
@@ -102,15 +114,36 @@ def generate_launch_description():
     robot_xacro = LaunchConfiguration("robot_xacro")
     gazebo_executable = LaunchConfiguration("gazebo_executable")
     grasp_assist_mode = LaunchConfiguration("grasp_assist_mode")
+    grasp_stabilization_mode = LaunchConfiguration("grasp_stabilization_mode")
     record_contact_diagnostics = LaunchConfiguration("record_contact_diagnostics")
     contact_diagnostics_output = LaunchConfiguration("contact_diagnostics_output")
+
+    physics_xacro = str(Path(package_share) / "urdf" / "piper_eye_in_hand_physics.xacro")
+    grasp_fix_xacro = str(Path(package_share) / "urdf" / "piper_eye_in_hand_grasp_fix.xacro")
+    no_attachment_world = str(Path(package_share) / "worlds" / "grasp_table_no_attachment.world")
+    legacy_world = str(Path(package_share) / "worlds" / "grasp_table.world")
+    effective_robot_xacro = PythonExpression([
+        "'", grasp_stabilization_mode, "' == 'gazebo_grasp_fix' and '",
+        grasp_fix_xacro, "' or '", physics_xacro, "'",
+    ])
+    effective_world = PythonExpression([
+        "'", grasp_stabilization_mode, "' == 'gazebo_grasp_fix' and '",
+        no_attachment_world, "' or ( '", grasp_stabilization_mode,
+        "' == 'legacy_contact_confirmed' or '", grasp_assist_mode,
+        "' == 'contact_confirmed' ) and '", legacy_world, "' or '",
+        no_attachment_world, "'",
+    ])
 
     piper_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             str(Path(package_share) / "launch" / "piper_sim.launch.py")
         ),
+        # The historical override was "robot_xacro": robot_xacro.  The
+        # stabilization selector now owns this value so OFF cannot smuggle in
+        # a second attachment backend.
         launch_arguments={
-            "robot_xacro": robot_xacro,
+            "robot_xacro": effective_robot_xacro,
+            "world": effective_world,
             "gazebo_executable": gazebo_executable,
         }.items(),
     )
@@ -329,7 +362,11 @@ def generate_launch_description():
             }
         ],
         condition=IfCondition(
-            PythonExpression(["'", grasp_assist_mode, "' == 'contact_confirmed'"])
+            PythonExpression([
+                "'", grasp_stabilization_mode,
+                "' == 'legacy_contact_confirmed' or '",
+                grasp_assist_mode, "' == 'contact_confirmed'",
+            ])
         ),
     )
 
@@ -459,6 +496,11 @@ def generate_launch_description():
                 "grasp_assist_mode",
                 default_value="off",
                 description="off or contact_confirmed",
+            ),
+            DeclareLaunchArgument(
+                "grasp_stabilization_mode",
+                default_value="off",
+                description="off, gazebo_grasp_fix, or legacy_contact_confirmed",
             ),
             DeclareLaunchArgument(
                 "grasp_assist_service",
@@ -612,6 +654,7 @@ def generate_launch_description():
                 default_value=str(perception["history_duration"]),
             ),
             DeclareLaunchArgument("seed", default_value=str(perception["seed"])),
+            OpaqueFunction(function=_validate_stabilization_configuration),
             piper_launch,
             moveit_launch,
             grasp_pose_preview,

@@ -2136,3 +2136,28 @@ ros2 topic echo /joint_states_single --once
 
 复现时以本项目固定版本为第一优先级，再用官方文档核对安装方式。不要在同一个
 已验证环境中无计划升级 ROS、MoveIt、Orbbec、Piper SDK 或 PyTorch。
+
+## Gazebo grasp-fix 依赖和验收
+
+形式化仿真试验统一使用 `gazebo_grasp_fix` 稳定化后端。先构建固定提交，
+再加载工作区环境：
+
+```bash
+bash scripts/setup_gazebo_grasp_plugin.sh
+source scripts/source_env.sh
+```
+
+正式单试验入口仍然只有 `sim_bringup.launch.py`：
+
+```bash
+ros2 launch foam_grasp_sim sim_bringup.launch.py \
+  grasp_stabilization_mode:=gazebo_grasp_fix \
+  grasp_assist_mode:=off \
+  execute_motion:=false use_rviz:=false
+```
+
+`gazebo_grasp_fix` 与 `grasp_assist_mode:=contact_confirmed` 互斥；启动时会
+直接拒绝这种配置。插件只负责 Gazebo 接触后的抓取稳定化，不参与 RGB-D、
+tracking、readiness、commit 或 grasp 触发。最终 `task_success` 以
+`metrics.json` 的物理抬升和保持判据为准，不能由 attach 日志或
+`EXECUTION_FINISHED` 单独推断。

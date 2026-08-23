@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<!-- Simulator-level grasp stabilization wrapper; physics-only remains separate. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="piper_eye_in_hand_grasp_fix">
+  <xacro:include
+    filename="$(find foam_grasp_sim)/urdf/piper_eye_in_hand_physics.xacro"/>
+
+  <gazebo>
+    <plugin name="gazebo_grasp_fix" filename="libgazebo_grasp_fix.so">
+      <arm>
+        <arm_name>piper_gripper</arm_name>
+        <palm_link>link6</palm_link>
+        <gripper_link>link7</gripper_link>
+        <gripper_link>link8</gripper_link>
+      </arm>
+      <forces_angle_tolerance>100</forces_angle_tolerance>
+      <update_rate>10</update_rate>
+      <grip_count_threshold>2</grip_count_threshold>
+      <max_grip_count>3</max_grip_count>
+      <release_tolerance>0.005</release_tolerance>
+      <disable_collisions_on_attach>false</disable_collisions_on_attach>
+      <contact_topic>__default_topic__</contact_topic>
+    </plugin>
+  </gazebo>
+</robot>

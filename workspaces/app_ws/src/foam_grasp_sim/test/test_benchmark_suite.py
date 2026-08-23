@@ -147,6 +147,9 @@ class BenchmarkSuiteTest(unittest.TestCase):
                 self.assertTrue(
                     all(trial.resolved["grasp_assist_mode"] == "off" for trial in trials)
                 )
+                self.assertTrue(
+                    all(trial.resolved["grasp_stabilization_mode"] == "gazebo_grasp_fix" for trial in trials)
+                )
             if name == "grasp_physics_qualification":
                 self.assertEqual(len(trials), 1)
                 self.assertEqual(trials[0].method, "snapshot")
@@ -163,6 +166,15 @@ class BenchmarkSuiteTest(unittest.TestCase):
                 self.assertIn("post_close_hold_s:=1.0", trials[0].launch_args)
                 self.assertIn("auto_pause_s:=0.5", trials[0].launch_args)
                 self.assertIn("countdown_seconds:=0", trials[0].launch_args)
+
+    def test_rejects_legacy_assist_with_gazebo_grasp_fix(self):
+        suite = _suite(defaults={
+            **_suite()["defaults"],
+            "grasp_stabilization_mode": "gazebo_grasp_fix",
+            "grasp_assist_mode": "contact_confirmed",
+        })
+        with self.assertRaisesRegex(SuiteValidationError, "mutually exclusive"):
+            expand_suite(suite)
 
     def test_standard_suites_have_unique_deterministic_run_ids(self):
         root = Path(__file__).resolve().parents[1] / "config" / "benchmark_suites"

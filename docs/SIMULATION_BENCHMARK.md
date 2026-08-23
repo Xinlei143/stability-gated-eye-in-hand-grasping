@@ -213,3 +213,47 @@ never silently treated as successes. Paired results are reported as
 
 Stage 7 does not add RGB-D domain adaptation, retraining, ground-truth
 shortcuts, statistical claims, or the complete paper benchmark matrix.
+
+## Gazebo grasp stabilization qualification
+
+The simulator has one explicit stabilization selector:
+`grasp_stabilization_mode` is `off`, `gazebo_grasp_fix`, or
+`legacy_contact_confirmed`. The formal core baseline compares
+snapshot/tracking/gated under `gazebo_grasp_fix`. In that mode
+`sim_bringup.launch.py`
+selects `piper_eye_in_hand_grasp_fix.xacro` and
+`grasp_table_no_attachment.world`; the old model-attachment plugin and the
+legacy `/gazebo/attach` service are not started. Selecting the legacy mode is
+allowed only for compatibility diagnostics, never together with
+`gazebo_grasp_fix`.
+
+The pinned plugin is built locally with:
+
+```bash
+bash scripts/setup_gazebo_grasp_plugin.sh
+source scripts/source_env.sh
+```
+
+The plugin configuration is shared across methods: palm `link6`, gripper links
+`link7`/`link8`, force-angle tolerance `100`, update rate `10 Hz`, grip
+threshold `2`, maximum grip count `3`, release tolerance `5 mm`, and collision
+disabling disabled. These are simulator-level stabilization parameters, not
+perception or method-policy parameters. A successful attach or completed
+trajectory is not task success; the runner requires readable `metrics.json`
+with physical lift and hold checks passing.
+
+Plugin-load smoke test (no target or grasp pipeline is needed):
+
+```bash
+source scripts/source_env.sh
+export GAZEBO_MASTER_URI=http://127.0.0.1:11459
+export GAZEBO_IP=127.0.0.1
+export ROS_LOCALHOST_ONLY=1
+ros2 launch foam_grasp_sim piper_sim.launch.py \
+  robot_xacro:="$PWD/workspaces/app_ws/install/foam_grasp_sim/share/foam_grasp_sim/urdf/piper_eye_in_hand_grasp_fix.xacro" \
+  world:="$PWD/workspaces/app_ws/install/foam_grasp_sim/share/foam_grasp_sim/worlds/grasp_table_no_attachment.world" \
+  gazebo_executable:=gzserver
+```
+
+The log must contain `Loading grasp-fix plugin`, the configured link names and
+contact subscription, with no `Failed to load plugin` or missing-link error.
