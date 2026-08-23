@@ -10,6 +10,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     IncludeLaunchDescription,
     RegisterEventHandler,
+    Shutdown,
     TimerAction,
 )
 from launch.conditions import IfCondition
@@ -101,6 +102,8 @@ def generate_launch_description():
     robot_xacro = LaunchConfiguration("robot_xacro")
     gazebo_executable = LaunchConfiguration("gazebo_executable")
     grasp_assist_mode = LaunchConfiguration("grasp_assist_mode")
+    record_contact_diagnostics = LaunchConfiguration("record_contact_diagnostics")
+    contact_diagnostics_output = LaunchConfiguration("contact_diagnostics_output")
 
     piper_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -262,6 +265,10 @@ def generate_launch_description():
         "--target-class",
         target_model,
         "--auto-latch",
+        "--post-close-hold-s",
+        LaunchConfiguration("post_close_hold_s"),
+        "--auto-pause",
+        LaunchConfiguration("auto_pause_s"),
     ]
     plan_sequence = Node(
         package="foam_grasp",
@@ -295,7 +302,7 @@ def generate_launch_description():
             "--confirm",
             "AUTO_FULL_OBJECT_GRASP",
             "--countdown-seconds",
-            "0",
+            LaunchConfiguration("countdown_seconds"),
         ],
         condition=IfCondition(
             PythonExpression(
@@ -324,6 +331,21 @@ def generate_launch_description():
         condition=IfCondition(
             PythonExpression(["'", grasp_assist_mode, "' == 'contact_confirmed'"])
         ),
+    )
+
+    contact_diagnostics = Node(
+        package="foam_grasp_sim",
+        executable="contact_diagnostics_node",
+        name="foam_contact_diagnostics",
+        output="screen",
+        parameters=[
+            {
+                "use_sim_time": execution["use_sim_time"],
+                "target_entity": PythonExpression(["'foam_' + '", target_model, "'"]),
+                "output_path": contact_diagnostics_output,
+            }
+        ],
+        condition=IfCondition(record_contact_diagnostics),
     )
 
     benchmark_logger = Node(
@@ -366,22 +388,40 @@ def generate_launch_description():
     # The table is built into the world as a static model. Only the selected
     # target uses the Gazebo factory, avoiding a known static-model spawn queue
     # timeout while keeping target insertion serialized before the pipeline.
-    scene = TimerAction(period=10.0, actions=[*target_spawns])
+    scene = TimerAction(
+        period=LaunchConfiguration("target_spawn_delay_s"),
+        actions=[*target_spawns],
+    )
+
+    def _after_target_spawn(event, context):
+        del context
+        returncode = event.returncode
+        if returncode not in (None, 0):
+            return [
+                Shutdown(
+                    reason=(
+                        "target spawn failed; refusing to start the grasp pipeline "
+                        f"(returncode={returncode})"
+                    )
+                )
+            ]
+        return [
+            *motion_nodes,
+            simulated_perception,
+            method_policy,
+            benchmark_logger,
+            TimerAction(period=1.0, actions=[plan_sequence, execute_sequence]),
+        ]
+
     pipeline_after_target_handlers = [
         RegisterEventHandler(
             OnProcessExit(
                 target_action=target_spawn,
-                on_exit=[
-                    *motion_nodes,
-                    simulated_perception,
-                    method_policy,
-                    benchmark_logger,
-                ],
+                on_exit=_after_target_spawn,
             )
         )
         for target_spawn in target_spawns
     ]
-    sequence = TimerAction(period=10.0, actions=[plan_sequence, execute_sequence])
 
     return LaunchDescription(
         [
@@ -391,9 +431,9 @@ def generate_launch_description():
                 default_value=str(
                     Path(package_share)
                     / "urdf"
-                    / "piper_eye_in_hand_gazebo.xacro"
+                    / "piper_eye_in_hand_physics.xacro"
                 ),
-                description="Local eye-in-hand wrapper forwarded to piper_sim.launch.py",
+                description="Local physics wrapper forwarded to piper_sim.launch.py",
             ),
             DeclareLaunchArgument(
                 "gazebo_executable",
@@ -424,6 +464,40 @@ def generate_launch_description():
                 "grasp_assist_service",
                 default_value="",
                 description="Optional service used to attach after dual-finger contact",
+            ),
+            DeclareLaunchArgument(
+                "record_contact_diagnostics",
+                default_value="false",
+                description="Record raw finger contact wrench samples",
+            ),
+            DeclareLaunchArgument(
+                "contact_diagnostics_output",
+                default_value="/tmp/foam_grasp_contact_diagnostics.csv",
+                description="CSV output path for contact diagnostics",
+            ),
+            DeclareLaunchArgument(
+                "post_close_hold_s",
+                default_value="1.0",
+                description="Seconds to hold the closed gripper before lift",
+            ),
+            DeclareLaunchArgument(
+                "auto_pause_s",
+                default_value="1.0",
+                description="Seconds to let the arm settle at each automatic checkpoint",
+            ),
+            DeclareLaunchArgument(
+                "countdown_seconds",
+                default_value="0",
+                description="Seconds to settle after planning before execution",
+            ),
+            DeclareLaunchArgument(
+                "target_spawn_delay_s",
+                default_value="12.0",
+                description=(
+                    "Delay before inserting the target after Gazebo starts; "
+                    "keeps the factory request serialized without letting the "
+                    "uncommanded arm fall for the full startup window"
+                ),
             ),
             DeclareLaunchArgument(
                 "method",
@@ -544,6 +618,6 @@ def generate_launch_description():
             scene,
             *pipeline_after_target_handlers,
             grasp_assist,
-            sequence,
+            contact_diagnostics,
         ]
     )

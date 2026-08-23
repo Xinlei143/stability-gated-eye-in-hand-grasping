@@ -45,6 +45,10 @@ _KNOWN_DEFAULTS = {
     "metrics_rate", "record_benchmark", "run_grasp_pipeline", "use_rviz",
     "perception_source", "outlier_range_mm", "scenario", "target_timeout",
     "timeout_s", "grasp_assist_mode", "grasp_assist_service",
+    "record_contact_diagnostics", "post_close_hold_s",
+    "auto_pause_s",
+    "countdown_seconds",
+    "target_spawn_delay_s",
 }
 _FLOAT_RANGES = {
     "latency_ms": (0.0, 60_000.0),
@@ -60,8 +64,12 @@ _FLOAT_RANGES = {
     "velocity_z": (-10.0, 10.0),
     "move_duration": (0.0, 3_600.0),
     "stop_duration": (0.0, 3_600.0),
+    "auto_pause_s": (0.5, 3.0),
+    "target_spawn_delay_s": (1.0, 30.0),
 }
-_INT_PARAMETERS = {"minimum_stable_samples", "tracking_max_updates"}
+_INT_PARAMETERS = {
+    "minimum_stable_samples", "tracking_max_updates", "countdown_seconds"
+}
 _METHOD_ONLY = {"method"}
 
 
@@ -241,6 +249,10 @@ def _launch_args(resolved: Mapping[str, Any], run_id: str, results_root: str) ->
         "observation_timeout", "metrics_rate", "tracking_commit_timeout",
         "tracking_replan_threshold", "tracking_commit_tolerance", "tracking_max_updates",
         "grasp_assist_mode", "grasp_assist_service",
+        "record_contact_diagnostics", "post_close_hold_s",
+        "auto_pause_s",
+        "countdown_seconds",
+        "target_spawn_delay_s",
     )
     args = ["ros2", "launch", "foam_grasp_sim", "sim_bringup.launch.py"]
     for name in names:

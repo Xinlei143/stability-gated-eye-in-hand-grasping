@@ -1,0 +1,56 @@
+# PID gains are consumed by gazebo_ros2_control while the upstream
+# JointTrajectoryControllers continue to command position targets.
+gazebo_ros2_control:
+  ros__parameters:
+    pid_gains:
+      position_pid:
+        joint1:
+          kp: 300.0
+          ki: 0.0
+          kd: 20.0
+          max_integral_error: 0.0
+        joint2:
+          kp: 300.0
+          ki: 0.0
+          kd: 20.0
+          max_integral_error: 0.0
+        joint3:
+          kp: 300.0
+          ki: 0.0
+          kd: 20.0
+          max_integral_error: 0.0
+        joint4:
+          kp: 100.0
+          ki: 0.0
+          kd: 8.0
+          max_integral_error: 0.0
+        joint5:
+          kp: 100.0
+          ki: 0.0
+          kd: 8.0
+          max_integral_error: 0.0
+        joint6:
+          kp: 100.0
+          ki: 0.0
+          kd: 100.0
+          max_integral_error: 0.0
+        joint7:
+          kp: 300.0
+          ki: 0.0
+          kd: 2.0
+          max_integral_error: 0.0
+        joint8:
+          kp: 300.0
+          ki: 0.0
+          kd: 2.0
+          max_integral_error: 0.0
+
+# Keep the controller contract explicit for the local physics qualification.
+gripper_controller:
+  ros__parameters:
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]
+gripper8_controller:
+  ros__parameters:
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]

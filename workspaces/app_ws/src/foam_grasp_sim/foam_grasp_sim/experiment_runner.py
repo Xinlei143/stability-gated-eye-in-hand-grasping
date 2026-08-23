@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ from typing import Any, Callable, Mapping
 from foam_grasp.benchmark_events import TERMINAL_EVENTS
 from foam_grasp_sim.benchmark_event_logger import parse_event
 from foam_grasp_sim.benchmark_suite import TrialSpec, expand_suite, load_suite
+from foam_grasp_sim.contact_qualification import summarize_contact_file
 
 
 TERMINAL_PREFIX = "BENCHMARK_TERMINAL_EVENT="
@@ -28,7 +30,7 @@ TRIAL_FIELDS = (
     "run_id", "pair_id", "method", "trajectory", "scenario", "seed", "config_hash",
     "status", "attempt", "started_at", "finished_at", "exit_code", "terminal_event",
     "trial_success", "task_success", "artifacts_complete", "result_path", "log_path",
-    "error",
+    "cleanup", "error",
 )
 
 
@@ -81,8 +83,9 @@ def terminal_matches(spec: TrialSpec, event: Mapping[str, Any]) -> bool:
     )
 
 
-def artifacts_complete(run_dir: Path) -> bool:
-    return run_dir.is_dir() and all((run_dir / name).is_file() for name in RUN_ARTIFACTS)
+def artifacts_complete(run_dir: Path, extra=()) -> bool:
+    required = tuple(RUN_ARTIFACTS) + tuple(extra)
+    return run_dir.is_dir() and all((run_dir / name).is_file() for name in required)
 
 
 def status_for_artifacts(run_dir: Path, status: Mapping[str, Any]) -> dict[str, Any]:
@@ -105,13 +108,49 @@ def status_for_artifacts(run_dir: Path, status: Mapping[str, Any]) -> dict[str, 
     return result
 
 
+def _signal_process_group_id(pgid: int, sig: signal.Signals) -> None:
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        return
+
+
 def signal_process_group(pid: int, sig: signal.Signals) -> None:
     """Signal only the process group created by this runner."""
 
     try:
-        os.killpg(os.getpgid(pid), sig)
+        pgid = os.getpgid(pid)
     except ProcessLookupError:
         return
+    _signal_process_group_id(pgid, sig)
+
+
+def _process_group_exists(pgid: int) -> bool:
+    live_member_found = False
+    proc_root = Path("/proc")
+    if proc_root.is_dir():
+        for entry in proc_root.iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                stat_text = (entry / "stat").read_text(encoding="utf-8")
+                _, fields = stat_text.rsplit(")", 1)
+                fields = fields.split()
+                state = fields[0]
+                process_group = int(fields[2])
+            except (OSError, ValueError, IndexError):
+                continue
+            if process_group == pgid and state != "Z":
+                live_member_found = True
+                break
+        return live_member_found
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _wait_process(process: subprocess.Popen[str], seconds: float) -> bool:
@@ -121,18 +160,31 @@ def _wait_process(process: subprocess.Popen[str], seconds: float) -> bool:
     return process.poll() is not None
 
 
-def stop_process_group(process: subprocess.Popen[str], *, grace_s: float = 2.0) -> str:
-    if process.poll() is not None:
+def _wait_process_group(pgid: int, seconds: float) -> bool:
+    deadline = time.monotonic() + seconds
+    while _process_group_exists(pgid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    return not _process_group_exists(pgid)
+
+
+def stop_process_group(
+    process: subprocess.Popen[str], *, pgid: int | None = None, grace_s: float = 2.0
+) -> str:
+    if pgid is None:
+        try:
+            pgid = os.getpgid(process.pid)
+        except ProcessLookupError:
+            return "already_exited"
+    if not _process_group_exists(pgid):
         return "already_exited"
-    signal_process_group(process.pid, signal.SIGINT)
-    if _wait_process(process, grace_s):
+    _signal_process_group_id(pgid, signal.SIGINT)
+    if _wait_process_group(pgid, grace_s):
         return "sigint"
-    signal_process_group(process.pid, signal.SIGTERM)
-    if _wait_process(process, grace_s):
+    _signal_process_group_id(pgid, signal.SIGTERM)
+    if _wait_process_group(pgid, grace_s):
         return "sigterm"
-    signal_process_group(process.pid, signal.SIGKILL)
-    _wait_process(process, grace_s)
-    return "sigkill"
+    _signal_process_group_id(pgid, signal.SIGKILL)
+    return "sigkill" if _wait_process_group(pgid, grace_s) else "cleanup_failed"
 
 
 def _replace_arg(args: list[str], name: str, value: Any) -> None:
@@ -157,6 +209,8 @@ class CampaignRunner:
         *,
         timeout_s: float | None = None,
         logger_flush_grace_s: float = 1.0,
+        ros_domain_id: int | None = None,
+        gazebo_master_uri: str | None = None,
         popen_factory: Callable[..., subprocess.Popen[str]] = subprocess.Popen,
     ):
         self.specs = specs
@@ -165,6 +219,25 @@ class CampaignRunner:
         self.logger_flush_grace_s = float(logger_flush_grace_s)
         if self.logger_flush_grace_s < 0.0:
             raise ValueError("logger_flush_grace_s must be non-negative")
+        campaign_material = campaign_dir.name.encode("utf-8")
+        digest = int(hashlib.sha256(campaign_material).hexdigest()[:8], 16)
+        if ros_domain_id is None:
+            ros_domain_id = 20 + digest % 60
+        if not 0 <= int(ros_domain_id) <= 232:
+            raise ValueError("ros_domain_id must be within 0..232")
+        if gazebo_master_uri is None:
+            gazebo_master_uri = f"http://127.0.0.1:{12000 + digest % 2000}"
+        if not str(gazebo_master_uri).startswith("http://"):
+            raise ValueError("gazebo_master_uri must be an http:// URI")
+        self.runtime = {
+            "ros_domain_id": int(ros_domain_id),
+            "gazebo_master_uri": str(gazebo_master_uri),
+        }
+        runtime_key = hashlib.sha256(
+            f"{self.runtime['ros_domain_id']}|{self.runtime['gazebo_master_uri']}".encode()
+        ).hexdigest()[:16]
+        self._runtime_lock_path = Path("/tmp") / f"foam_grasp_sim_runtime_{runtime_key}.lock"
+        self._runtime_lock = None
         self.popen_factory = popen_factory
         self.campaign_dir.mkdir(parents=True, exist_ok=True)
         self.logs_dir = self.campaign_dir / "logs"
@@ -207,6 +280,25 @@ class CampaignRunner:
             "trial_success": "false", "task_success": "false", "artifacts_complete": "false",
         }
 
+    def _acquire_runtime_lock(self) -> None:
+        self._runtime_lock = self._runtime_lock_path.open("a+")
+        try:
+            fcntl.flock(self._runtime_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            self._runtime_lock.close()
+            self._runtime_lock = None
+            raise RuntimeError(
+                "another Gazebo campaign is using the same ROS/Gazebo runtime: "
+                f"{self.runtime}"
+            ) from error
+
+    def _release_runtime_lock(self) -> None:
+        if self._runtime_lock is None:
+            return
+        fcntl.flock(self._runtime_lock.fileno(), fcntl.LOCK_UN)
+        self._runtime_lock.close()
+        self._runtime_lock = None
+
     def _write_manifest(self, *, suite_name: str, suite_hash: str, started_at: str, finished_at: str | None = None) -> None:
         counts: dict[str, int] = {}
         for row in self.rows.values():
@@ -221,20 +313,31 @@ class CampaignRunner:
             "finished_at": finished_at,
             "trial_count": len(self.specs),
             "counts": counts,
+            "runtime": dict(self.runtime),
             "trials": [dict(self.rows.get(spec.run_id, self._base_row(spec))) for spec in self.specs],
         }
         _atomic_write(self.manifest_path, json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
     def _command(self, spec: TrialSpec, attempt: int) -> tuple[list[str], Path, Path]:
         run_name = spec.run_id if attempt == 1 else f"{spec.run_id}__attempt-{attempt:03d}"
+        run_dir = self.runs_dir / run_name
         args = list(spec.launch_args)
         _replace_arg(args, "results_root", str(self.runs_dir))
         _replace_arg(args, "run_id", run_name)
         _replace_arg(args, "config_hash", spec.config_hash)
         _replace_arg(args, "pair_id", spec.pair_id)
         _replace_arg(args, "condition_json", _condition_json(spec))
+        if bool(spec.resolved.get("record_contact_diagnostics", False)):
+            _replace_arg(args, "record_contact_diagnostics", "true")
+            _replace_arg(args, "contact_diagnostics_output", str(run_dir / "contact_diagnostics.csv"))
         log_name = spec.run_id if attempt == 1 else f"{spec.run_id}__attempt-{attempt:03d}"
-        return args, self.runs_dir / run_name, self.logs_dir / f"{log_name}.log"
+        return args, run_dir, self.logs_dir / f"{log_name}.log"
+
+    @staticmethod
+    def _extra_artifacts(spec: TrialSpec):
+        if bool(spec.resolved.get("record_contact_diagnostics", False)):
+            return ("contact_diagnostics.csv", "contact_metrics.json")
+        return ()
 
     def _should_run(self, spec: TrialSpec, *, resume: bool, rerun_failed: bool) -> bool:
         row = self.rows.get(spec.run_id)
@@ -261,13 +364,21 @@ class CampaignRunner:
         terminal = None
         timed_out = False
         process = None
+        cleanup = "not_started"
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("w", encoding="utf-8") as log:
             try:
+                environment = os.environ.copy()
+                environment.update({
+                    "ROS_DOMAIN_ID": str(self.runtime["ros_domain_id"]),
+                    "GAZEBO_MASTER_URI": self.runtime["gazebo_master_uri"],
+                    "ROS_LOCALHOST_ONLY": "1",
+                })
                 process = self.popen_factory(
                     command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    text=True, bufsize=1, start_new_session=True,
+                    text=True, bufsize=1, start_new_session=True, env=environment,
                 )
+                process_group_id = process.pid
                 selector = selectors.DefaultSelector()
                 if process.stdout is not None:
                     selector.register(process.stdout, selectors.EVENT_READ)
@@ -294,10 +405,7 @@ class CampaignRunner:
                     # ROS nodes.  Give the logger one bounded flush window
                     # before interrupting the launch process group.
                     time.sleep(self.logger_flush_grace_s)
-                if terminal is not None or timed_out:
-                    cleanup = stop_process_group(process)
-                else:
-                    cleanup = "already_exited"
+                cleanup = stop_process_group(process, pgid=process_group_id)
                 # Drain output that was already buffered before finalizing.
                 if process.stdout is not None:
                     for line in process.stdout:
@@ -308,18 +416,27 @@ class CampaignRunner:
                                 terminal = event
             except KeyboardInterrupt:
                 if process is not None:
-                    cleanup = stop_process_group(process)
+                    cleanup = stop_process_group(process, pgid=process_group_id)
                 row.update({"status": "interrupted", "error": "runner interrupted"})
                 raise
             finally:
                 if process is not None:
+                    if _process_group_exists(process_group_id):
+                        cleanup = stop_process_group(process, pgid=process_group_id)
                     process.wait(timeout=5)
                     if process.stdout is not None:
                         process.stdout.close()
         row["finished_at"] = utc_now()
         row["exit_code"] = str(process.returncode if process is not None else "")
         row["terminal_event"] = terminal.get("event", "") if terminal else ""
-        row["artifacts_complete"] = str(artifacts_complete(run_dir)).lower()
+        row["cleanup"] = cleanup
+        if bool(spec.resolved.get("record_contact_diagnostics", False)):
+            contact_path = run_dir / "contact_diagnostics.csv"
+            if contact_path.is_file():
+                summarize_contact_file(contact_path, run_dir / "contact_metrics.json")
+        row["artifacts_complete"] = str(
+            artifacts_complete(run_dir, self._extra_artifacts(spec))
+        ).lower()
         if timed_out:
             row.update({"status": "timed_out", "error": "trial timeout"})
         elif terminal is not None:
@@ -345,12 +462,16 @@ class CampaignRunner:
                 print(" ".join(command))
             self._write_manifest(suite_name=suite_name, suite_hash=suite_hash, started_at=started, finished_at=utc_now())
             return [self.rows.get(spec.run_id, self._base_row(spec)) for spec in selected]
-        results = []
-        for spec in selected:
-            results.append(self.run_trial(spec, attempt=self._next_attempt(spec)))
-            self._write_manifest(suite_name=suite_name, suite_hash=suite_hash, started_at=started)
-        self._write_manifest(suite_name=suite_name, suite_hash=suite_hash, started_at=started, finished_at=utc_now())
-        return results
+        self._acquire_runtime_lock()
+        try:
+            results = []
+            for spec in selected:
+                results.append(self.run_trial(spec, attempt=self._next_attempt(spec)))
+                self._write_manifest(suite_name=suite_name, suite_hash=suite_hash, started_at=started)
+            self._write_manifest(suite_name=suite_name, suite_hash=suite_hash, started_at=started, finished_at=utc_now())
+            return results
+        finally:
+            self._release_runtime_lock()
 
 
 def _suite_hash(suite: Mapping[str, Any]) -> str:
@@ -381,6 +502,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--results-root", default="results")
     parser.add_argument("--campaign-id")
     parser.add_argument("--timeout", type=float)
+    parser.add_argument("--ros-domain-id", type=int)
+    parser.add_argument("--gazebo-master-uri")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--rerun-failed", action="store_true")
@@ -397,7 +520,13 @@ def main(argv: list[str] | None = None) -> int:
     campaign_dir = Path(args.results_root) / campaign_id
     if campaign_dir.exists() and not (args.resume or args.rerun_failed or args.dry_run):
         raise SystemExit(f"campaign exists; choose --campaign-id with --resume or --rerun-failed: {campaign_dir}")
-    runner = CampaignRunner(specs, campaign_dir, timeout_s=args.timeout)
+    runner = CampaignRunner(
+        specs,
+        campaign_dir,
+        timeout_s=args.timeout,
+        ros_domain_id=args.ros_domain_id,
+        gazebo_master_uri=args.gazebo_master_uri,
+    )
     runner.run(
         suite_name=suite["name"], suite_hash=suite_hash,
         dry_run=args.dry_run, resume=args.resume,

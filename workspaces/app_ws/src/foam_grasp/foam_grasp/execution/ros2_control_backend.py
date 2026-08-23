@@ -168,14 +168,14 @@ class Ros2ControlBackend(ExecutionBackend):
         try:
             self._execute(
                 self._single_point_trajectory(
-                    self.node.arm_joint_names, arm, 0.15
+                    self.node.arm_joint_names, arm, 1.0
                 ),
                 self.arm_client,
                 "hold arm",
             )
             self._execute_gripper_pair(
                 self._paired_gripper_trajectories(
-                    actual_gripper_m, self.gripper_command_scale, 0.15
+                    actual_gripper_m, self.gripper_command_scale, 2.0
                 ),
                 "hold gripper",
             )
@@ -216,7 +216,7 @@ class Ros2ControlBackend(ExecutionBackend):
         del args
         result = self._execute_gripper_pair(
             self._paired_gripper_trajectories(
-                float(target_actual_m), self.gripper_command_scale, 1.0
+                float(target_actual_m), self.gripper_command_scale, 2.0
             ),
             "gripper",
         )

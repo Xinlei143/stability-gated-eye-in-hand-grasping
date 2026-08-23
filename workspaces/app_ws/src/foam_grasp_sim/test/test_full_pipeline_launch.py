@@ -12,7 +12,7 @@ class FullPipelineLaunchTest(unittest.TestCase):
         self.assertIn('executable="depth_fusion_node"', source)
         self.assertIn('executable="camera_to_base_node"', source)
         self.assertIn('"transform_source": "tf"', source)
-        self.assertIn("piper_eye_in_hand_gazebo.xacro", source)
+        self.assertIn("piper_eye_in_hand_physics.xacro", source)
         self.assertIn('executable="move_to_observe"', source)
         self.assertIn('AUTO_MOVE_TO_OBSERVE', source)
         self.assertIn("TimerAction(period=5.0, actions=[move_to_observe])", source)

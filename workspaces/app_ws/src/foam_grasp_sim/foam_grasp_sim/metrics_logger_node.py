@@ -94,7 +94,10 @@ class MetricsLoggerNode(Node):
             run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.run_id = run_id
         self.run_dir = root / run_id
-        self.run_dir.mkdir(parents=True, exist_ok=False)
+        # Contact diagnostics may create the per-trial directory first.  The
+        # runner assigns a fresh run_id for every attempt, so accepting an
+        # existing directory here is safe and removes the startup race.
+        self.run_dir.mkdir(parents=True, exist_ok=True)
         self.events = []
         self.states = []
         self.metrics = MetricsAccumulator()

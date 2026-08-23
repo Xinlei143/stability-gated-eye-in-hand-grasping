@@ -7,7 +7,7 @@ vendor checkout.
 
 from pathlib import Path
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
@@ -30,9 +30,16 @@ def generate_launch_description():
     world = LaunchConfiguration("world")
     gazebo_executable = LaunchConfiguration("gazebo_executable")
     default_robot_xacro = (
-        Path(simulation_share) / "urdf" / "piper_eye_in_hand_gazebo.xacro"
+        Path(simulation_share) / "urdf" / "piper_eye_in_hand_physics.xacro"
     )
     robot_xacro = LaunchConfiguration("robot_xacro")
+    physics_pid_config = Path(simulation_share) / "config" / "ros2_controllers_physics.yaml"
+    physics_renderer = (
+        Path(get_package_prefix("foam_grasp_sim"))
+        / "lib"
+        / "foam_grasp_sim"
+        / "render_physics_description"
+    )
 
     gazebo = ExecuteProcess(
         cmd=[
@@ -47,7 +54,13 @@ def generate_launch_description():
         output="screen",
     )
     robot_description = Command(
-        [FindExecutable(name="xacro"), " ", robot_xacro]
+        [
+            str(physics_renderer),
+            " ",
+            robot_xacro,
+            " ",
+            str(physics_pid_config),
+        ]
     )
     robot_state_publisher = Node(
         package="robot_state_publisher",
@@ -80,6 +93,14 @@ def generate_launch_description():
     arm_controller = _controller_spawner("arm_controller")
     gripper_controller = _controller_spawner("gripper_controller")
     gripper8_controller = _controller_spawner("gripper8_controller")
+    arm_startup_hold = Node(
+        package="foam_grasp_sim",
+        executable="arm_startup_hold",
+        output="screen",
+        parameters=[
+            {"use_sim_time": True},
+        ],
+    )
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -127,6 +148,12 @@ def generate_launch_description():
                 OnProcessExit(
                     target_action=gripper_controller,
                     on_exit=[gripper8_controller],
+                )
+            ),
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=gripper8_controller,
+                    on_exit=[arm_startup_hold],
                 )
             ),
         ]

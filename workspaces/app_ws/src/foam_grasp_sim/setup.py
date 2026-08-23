@@ -49,6 +49,14 @@ setup(
             "metrics_logger_node = "
             "foam_grasp_sim.metrics_logger_node:main",
             "grasp_assist_node = foam_grasp_sim.grasp_assist_node:main",
+            "contact_diagnostics_node = "
+            "foam_grasp_sim.contact_diagnostics_node:main",
+            "summarize_contact_diagnostics = "
+            "foam_grasp_sim.contact_qualification:main",
+            "render_physics_description = "
+            "foam_grasp_sim.physics_description:main",
+            "arm_startup_hold = "
+            "foam_grasp_sim.arm_startup_hold_node:main",
             "run_sim_benchmark = foam_grasp_sim.experiment_runner:main",
         ],
     },

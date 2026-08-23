@@ -114,7 +114,7 @@ def generate_launch_description():
         DeclareLaunchArgument("config_hash", default_value=""),
         DeclareLaunchArgument("pair_id", default_value=""),
         DeclareLaunchArgument("condition_json", default_value="{}"),
-        DeclareLaunchArgument("robot_xacro", default_value=str(package_share / "urdf" / "piper_eye_in_hand_gazebo.xacro")),
+        DeclareLaunchArgument("robot_xacro", default_value=str(package_share / "urdf" / "piper_eye_in_hand_physics.xacro")),
         DeclareLaunchArgument("gazebo_executable", default_value="gzserver"),
     ]
     return LaunchDescription(
