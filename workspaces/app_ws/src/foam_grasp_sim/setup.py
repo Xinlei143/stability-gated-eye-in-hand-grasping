@@ -59,6 +59,8 @@ setup(
             "foam_grasp_sim.control_physics_qualification_node:main",
             "static_grasp_hold_diagnosis = "
             "foam_grasp_sim.static_grasp_hold_diagnosis_node:main",
+            "simulation_readiness = "
+            "foam_grasp_sim.simulation_readiness_node:main",
             "run_sim_benchmark = foam_grasp_sim.experiment_runner:main",
         ],
     },

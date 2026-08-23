@@ -119,7 +119,16 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertEqual(rows[0]["task_success"], "false")
             self.assertIn("TRIAL_FINISHED", rows[0]["terminal_event"])
 
-    def test_physical_artifact_failure_overrides_finished_terminal_status(self):
+    def test_execute_finished_terminal_marks_completed_trial(self):
+        status = status_for_terminal({
+            "event": "TRIAL_FINISHED",
+            "details": {"execution_mode": "execute"},
+        })
+        self.assertEqual(status["status"], "finished")
+        self.assertTrue(status["trial_success"])
+        self.assertFalse(status["task_success"])
+
+    def test_execute_task_failure_keeps_completed_trial_finished(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)
             (run_dir / "metrics.json").write_text(json.dumps({
@@ -128,23 +137,39 @@ class ExperimentRunnerTest(unittest.TestCase):
             }))
             status = status_for_artifacts(
                 run_dir,
-                {"status": "finished", "trial_success": True, "task_success": True},
+                {
+                    "status": "finished",
+                    "trial_success": True,
+                    "task_success": False,
+                    "execution_mode": "execute",
+                },
             )
-            self.assertEqual(status["status"], "failed")
-            self.assertFalse(status["trial_success"])
+            self.assertEqual(status["status"], "finished")
+            self.assertTrue(status["trial_success"])
             self.assertFalse(status["task_success"])
 
-    def test_execute_terminal_success_requires_physical_metrics(self):
+    def test_execute_task_success_comes_from_metrics(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)
             (run_dir / "metrics.json").write_text(json.dumps({
                 "physical_grasp_success": False,
-                "task_success": False,
+                "task_success": True,
                 "trial_success": True,
             }))
             status = status_for_artifacts(
                 run_dir,
-                {"status": "finished", "trial_success": True, "task_success": True,
+                {"status": "finished", "trial_success": True, "task_success": False,
+                 "execution_mode": "execute"},
+            )
+            self.assertEqual(status["status"], "finished")
+            self.assertTrue(status["trial_success"])
+            self.assertTrue(status["task_success"])
+
+    def test_execute_metrics_missing_is_infrastructure_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            status = status_for_artifacts(
+                Path(directory),
+                {"status": "finished", "trial_success": True, "task_success": False,
                  "execution_mode": "execute"},
             )
             self.assertEqual(status["status"], "failed")

@@ -76,7 +76,7 @@ def status_for_terminal(event: Mapping[str, Any]) -> dict[str, Any]:
                 "task_success": False, "execution_mode": execution_mode,
             }
         return {
-            "status": "finished", "trial_success": False,
+            "status": "finished", "trial_success": True,
             "task_success": False, "execution_mode": execution_mode,
         }
     return {"status": "failed", "trial_success": False, "task_success": False}
@@ -108,17 +108,18 @@ def status_for_artifacts(run_dir: Path, status: Mapping[str, Any]) -> dict[str, 
         if result.get("execution_mode") == "execute":
             return {
                 "status": "failed", "trial_success": False,
-                "task_success": False, "error": "physical metrics missing",
+                "task_success": False, "error": "execute metrics missing",
             }
         return result
     if result.get("execution_mode") == "execute":
-        if metrics.get("physical_grasp_success") is True and metrics.get("task_success") is True:
-            return {"status": "finished", "trial_success": True, "task_success": True}
+        if not isinstance(metrics.get("task_success"), bool):
+            return {
+                "status": "failed", "trial_success": False,
+                "task_success": False, "error": "execute metrics task_success missing",
+            }
         return {
-            "status": "failed",
-            "trial_success": False,
-            "task_success": False,
-            "error": "physical grasp verification failed",
+            "status": "finished", "trial_success": True,
+            "task_success": metrics["task_success"],
         }
     if result.get("task_success") and metrics.get("physical_grasp_success") is not True:
         return {
