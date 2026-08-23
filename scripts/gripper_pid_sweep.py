@@ -15,8 +15,11 @@ from pathlib import Path
 
 import yaml
 
+from foam_grasp_sim.static_grasp_diagnosis import write_sweep_summary_csv
+
 
 DEFAULT_KPS = (50.0, 100.0, 150.0, 200.0, 250.0, 300.0)
+STATIC_HOLD_DEFAULT_KPS = (300.0, 350.0, 400.0, 450.0, 500.0)
 
 
 def _percentile(values, fraction):
@@ -77,6 +80,20 @@ def build_launch_command(*, config_path, robot_xacro, output_dir, qualification_
         "control_physics_qualification.launch.py",
         "mode:=loaded_gripper",
         f"config:={qualification_config}",
+        f"output_dir:={output_dir}",
+        f"robot_xacro:={robot_xacro}",
+        f"physics_pid_config:={config_path}",
+    ]
+
+
+def build_static_hold_launch_command(*, config_path, robot_xacro, output_dir,
+                                     diagnosis_config):
+    return [
+        "ros2",
+        "launch",
+        "foam_grasp_sim",
+        "static_grasp_hold_diagnosis.launch.py",
+        f"config:={diagnosis_config}",
         f"output_dir:={output_dir}",
         f"robot_xacro:={robot_xacro}",
         f"physics_pid_config:={config_path}",
@@ -176,7 +193,10 @@ def run_sweep(*, source_pid_config, robot_xacro, qualification_config, output_ro
                     stderr=subprocess.STDOUT,
                     start_new_session=True,
                     text=True,
-                    env=build_launch_environment(11470 + trial_index),
+                    env={
+                        **build_launch_environment(11470 + trial_index),
+                        "ROS_LOG_DIR": str(output_root / "ros_logs" / f"kp_{kp:g}_repeat_{repeat}"),
+                    },
                 )
                 try:
                     return_code = process.wait(timeout=float(trial_timeout_s))
@@ -220,32 +240,142 @@ def run_sweep(*, source_pid_config, robot_xacro, qualification_config, output_ro
     }
 
 
+def run_static_hold_sweep(*, source_pid_config, robot_xacro, diagnosis_config,
+                          output_root, kps=STATIC_HOLD_DEFAULT_KPS, repeats=3,
+                          dry_run=False, trial_timeout_s=120.0):
+    """Run the free-cube static hold diagnosis for every PID candidate."""
+
+    if int(repeats) < 3:
+        raise ValueError("repeats must be at least 3 for PID candidate selection")
+    output_root = Path(output_root)
+    output_root.mkdir(parents=True, exist_ok=True)
+    pid_config_root = output_root / "pid_configs"
+    pid_config_root.mkdir(parents=True, exist_ok=True)
+    entries = []
+    commands = []
+    trial_index = 0
+    for kp in kps:
+        kp = float(kp)
+        pid_path = pid_config_root / f"kp_{kp:g}.yaml"
+        _pid_config(source_pid_config, pid_path, kp)
+        for repeat in range(1, int(repeats) + 1):
+            trial_index += 1
+            run_dir = output_root / f"kp_{kp:g}" / f"repeat_{repeat}"
+            run_dir.mkdir(parents=True, exist_ok=True)
+            command = build_static_hold_launch_command(
+                config_path=pid_path,
+                robot_xacro=robot_xacro,
+                output_dir=run_dir,
+                diagnosis_config=diagnosis_config,
+            )
+            commands.append(command)
+            if dry_run:
+                continue
+            log_path = run_dir / "launch.log"
+            with log_path.open("w", encoding="utf-8") as log:
+                process = subprocess.Popen(
+                    command,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                    text=True,
+                    env={
+                        **build_launch_environment(11470 + trial_index),
+                        "ROS_LOG_DIR": str(output_root / "ros_logs" / f"kp_{kp:g}_repeat_{repeat}"),
+                    },
+                )
+                try:
+                    return_code = process.wait(timeout=float(trial_timeout_s))
+                except subprocess.TimeoutExpired:
+                    _stop_process_group(process)
+                    return_code = -signal.SIGTERM
+                except KeyboardInterrupt:
+                    _stop_process_group(process)
+                    raise
+                finally:
+                    if _process_group_exists(process):
+                        _stop_process_group(process)
+            summary_path = run_dir / "summary.json"
+            summary = {}
+            if summary_path.is_file():
+                try:
+                    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError):
+                    summary = {}
+            entries.append({
+                "kp": kp,
+                "repeat": repeat,
+                "return_code": int(return_code),
+                "passed": bool(return_code == 0 and summary.get("static_hold_passed", False)),
+                "summary": summary,
+                "run_dir": str(run_dir),
+            })
+    if not dry_run:
+        write_sweep_summary_csv(output_root / "sweep_summary.csv", entries)
+    return {
+        "mode": "static_hold",
+        "kps": [float(value) for value in kps],
+        "repeats": int(repeats),
+        "entries": entries,
+        "commands": commands,
+        "sweep_summary_csv": str(output_root / "sweep_summary.csv"),
+    }
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-pid-config", required=True)
     parser.add_argument("--robot-xacro", required=True)
-    parser.add_argument("--qualification-config", required=True)
+    parser.add_argument("--qualification-config")
     parser.add_argument("--output-root", required=True)
-    parser.add_argument("--kps", nargs="+", type=float, default=list(DEFAULT_KPS))
+    parser.add_argument("--kps", nargs="+", type=float, default=None)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--trial-timeout-s", type=float, default=90.0)
     parser.add_argument("--dry-run", action="store_true")
-    args = parser.parse_args(argv)
-    summary = run_sweep(
-        source_pid_config=args.source_pid_config,
-        robot_xacro=args.robot_xacro,
-        qualification_config=args.qualification_config,
-        output_root=args.output_root,
-        kps=args.kps,
-        repeats=args.repeats,
-        dry_run=args.dry_run,
-        trial_timeout_s=args.trial_timeout_s,
+    parser.add_argument(
+        "--mode", choices=("loaded_gripper", "static_hold"), default="loaded_gripper",
+        help="qualification mode; static_hold uses a free external cube and no lift",
     )
+    parser.add_argument(
+        "--diagnosis-config",
+        help="static_grasp_hold_diagnosis.yaml used when --mode static_hold",
+    )
+    args = parser.parse_args(argv)
+    if args.mode == "static_hold":
+        if not args.diagnosis_config:
+            parser.error("--diagnosis-config is required with --mode static_hold")
+        summary = run_static_hold_sweep(
+            source_pid_config=args.source_pid_config,
+            robot_xacro=args.robot_xacro,
+            diagnosis_config=args.diagnosis_config,
+            output_root=args.output_root,
+            kps=args.kps or STATIC_HOLD_DEFAULT_KPS,
+            repeats=args.repeats,
+            dry_run=args.dry_run,
+            trial_timeout_s=args.trial_timeout_s,
+        )
+    else:
+        if not args.qualification_config:
+            parser.error("--qualification-config is required with --mode loaded_gripper")
+        summary = run_sweep(
+            source_pid_config=args.source_pid_config,
+            robot_xacro=args.robot_xacro,
+            qualification_config=args.qualification_config,
+            output_root=args.output_root,
+            kps=args.kps or DEFAULT_KPS,
+            repeats=args.repeats,
+            dry_run=args.dry_run,
+            trial_timeout_s=args.trial_timeout_s,
+        )
     Path(args.output_root, "sweep_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     print(json.dumps(summary, indent=2, sort_keys=True))
-    return 0 if args.dry_run or summary["selected_kp"] is not None else 1
+    if args.dry_run:
+        return 0
+    if args.mode == "static_hold":
+        return 0 if any(entry.get("passed") for entry in summary["entries"]) else 1
+    return 0 if summary["selected_kp"] is not None else 1
 
 
 if __name__ == "__main__":

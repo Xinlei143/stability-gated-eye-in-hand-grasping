@@ -1,0 +1,18 @@
+target_entity: foam_cube
+cube_pose: [0.40, 0.00, 0.026]
+
+# This is the fixed arm configuration used by the existing physical
+# qualification, with the end-effector at the cube grasp pose.
+arm_pose: [0.0, 1.8500, -1.0700, 0.0, 0.5250, 0.0]
+
+# Piper joint7/joint8 are symmetric half-opening coordinates.
+joint_position_m_per_mm: 0.0005
+open_mm: 70.0
+close_mm: 40.0
+arm_settle_s: 1.0
+open_settle_s: 0.5
+hold_s: 2.0
+grid_hz: 100.0
+force_threshold_N: 0.8
+trajectory_duration_s: 2.0
+action_timeout_s: 30.0
