@@ -179,6 +179,12 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn("ros2_controllers_physics.yaml", piper)
         self.assertIn("default_value=str(default_robot_xacro)", piper)
 
+    def test_piper_launch_accepts_a_physics_pid_config_override(self):
+        piper = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
+        self.assertIn('"physics_pid_config",', piper)
+        self.assertIn('LaunchConfiguration("physics_pid_config")', piper)
+        self.assertIn('default_value=str(physics_pid_config)', piper)
+
     def test_physics_xacro_uses_position_pid_for_both_fingers(self):
         path = PACKAGE_ROOT / "urdf" / "piper_eye_in_hand_physics.xacro"
         text = path.read_text()
@@ -204,6 +210,18 @@ class SceneAssetTest(unittest.TestCase):
         self.assertEqual(pid["joint8"]["ki"], 0.0)
         self.assertGreater(pid["joint7"]["kp"], 0.0)
         self.assertGreater(pid["joint8"]["kp"], 0.0)
+
+    def test_loaded_qualification_fixture_is_explicit_and_mode_is_supported(self):
+        qualification = (PACKAGE_ROOT / "foam_grasp_sim" / "control_physics_qualification_node.py").read_text()
+        fixture = (PACKAGE_ROOT / "urdf" / "piper_eye_in_hand_loaded_qualification.xacro").read_text()
+        self.assertIn('"loaded_gripper"', qualification)
+        self.assertIn("calibration_block", fixture)
+        self.assertIn('<gazebo reference="calibration_block">', fixture)
+        self.assertIn('<selfCollide>true</selfCollide>', fixture)
+        self.assertIn('"velocity{index}"', qualification)
+        self.assertIn('"effort{index}"', qualification)
+        self.assertIn("<self_collide>true</self_collide>", fixture)
+        self.assertIn("loaded_gripper", (PACKAGE_ROOT / "launch" / "control_physics_qualification.launch.py").read_text())
 
     def test_control_qualification_config_is_target_free_and_three_stage_ready(self):
         config = yaml.safe_load(
