@@ -38,6 +38,7 @@ def generate_launch_description():
     qualification_config = LaunchConfiguration("qualification_config")
     qualification_output = LaunchConfiguration("qualification_output")
     physics_pid_config = Path(simulation_share) / "config" / "ros2_controllers_physics.yaml"
+    physics_pid_config_arg = LaunchConfiguration("physics_pid_config")
     physics_renderer = (
         Path(get_package_prefix("foam_grasp_sim"))
         / "lib"
@@ -63,7 +64,7 @@ def generate_launch_description():
             " ",
             robot_xacro,
             " ",
-            str(physics_pid_config),
+            physics_pid_config_arg,
         ]
     )
     robot_state_publisher = Node(
@@ -135,6 +136,11 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "qualification_output",
                 default_value="/tmp/foam_grasp_control_qualification",
+            ),
+            DeclareLaunchArgument(
+                "physics_pid_config",
+                default_value=str(physics_pid_config),
+                description="Controller/PID overlay passed to the physics renderer",
             ),
             DeclareLaunchArgument(
                 "gazebo_executable",

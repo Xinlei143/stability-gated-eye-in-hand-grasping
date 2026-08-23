@@ -1,0 +1,51 @@
+<?xml version="1.0"?>
+<!-- Qualification-only Piper wrapper with a rigid, known-width calibration block. -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="piper_eye_in_hand_loaded_qualification">
+  <xacro:include filename="$(find foam_grasp_sim)/urdf/piper_eye_in_hand_gazebo.xacro"/>
+
+  <!--
+    The block is fixed to gripper_base at the finger root.  Its 50 mm width
+    creates a repeatable preload target for the two prismatic fingers; it is
+    never included by normal sim_bringup/full-grasp launches.
+  -->
+  <link name="calibration_block">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.08"/>
+      <inertia ixx="3.333333e-5" ixy="0" ixz="0"
+               iyy="3.333333e-5" iyz="0" izz="3.333333e-5"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.050 0.050 0.050"/></geometry>
+      <material name="calibration_blue"><color rgba="0.1 0.3 0.8 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.050 0.050 0.050"/></geometry>
+    </collision>
+  </link>
+  <!-- A zero-range revolute joint keeps Gazebo from lumping this contact
+       target into link6, while remaining mechanically fixed at zero. -->
+  <joint name="calibration_block_mount" type="revolute">
+    <parent link="gripper_base"/>
+    <child link="calibration_block"/>
+    <origin xyz="0 0 0.1358" rpy="1.5708 0 0"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="0" upper="0" effort="1" velocity="1"/>
+  </joint>
+  <gazebo reference="calibration_block">
+    <mu1>0.80</mu1>
+    <mu2>0.70</mu2>
+    <selfCollide>true</selfCollide>
+  </gazebo>
+  <!-- The fixture is intentionally an in-model contact target. -->
+  <gazebo reference="link7"><selfCollide>true</selfCollide></gazebo>
+  <gazebo reference="link8"><selfCollide>true</selfCollide></gazebo>
+  <!-- Enable model-level self collision so the fixed calibration block is a
+       real contact target for the finger bumper sensors in Gazebo Classic. -->
+  <gazebo>
+    <selfCollide>true</selfCollide>
+    <self_collide>true</self_collide>
+  </gazebo>
+</robot>

@@ -177,7 +177,7 @@ class ContactDiagnosticsTest(unittest.TestCase):
 
     def test_contact_summary_requires_both_fingers_and_sustained_force(self):
         rows = []
-        for stamp in (0, 500_000_000, 1_000_000_000):
+        for stamp in range(0, 1_000_000_001, 10_000_000):
             for side in ("left", "right"):
                 rows.append({
                     "sim_time_ns": stamp,
@@ -185,7 +185,14 @@ class ContactDiagnosticsTest(unittest.TestCase):
                     "side": side,
                     "normal_force_N": 0.8,
                 })
-        summary = summarize_contact_rows(rows, hold_s=1.0)
+        summary = summarize_contact_rows(
+            rows,
+            events=[
+                {"event": "GRIPPER_SETTLE_STARTED", "sim_time_ns": 0},
+                {"event": "GRIPPER_SETTLE_FINISHED", "sim_time_ns": 1_000_000_000},
+            ],
+            hold_s=1.0,
+        )
         self.assertTrue(summary["passed"])
         self.assertEqual(set(summary["sides"]), {"left", "right"})
         self.assertAlmostEqual(summary["per_side"]["left"]["median_normal_force_N"], 0.8)
@@ -200,9 +207,140 @@ class ContactDiagnosticsTest(unittest.TestCase):
             }
             for stamp in (0, 500_000_000, 1_000_000_000)
         ]
-        summary = summarize_contact_rows(rows, hold_s=1.0)
+        summary = summarize_contact_rows(
+            rows,
+            events=[
+                {"event": "GRIPPER_SETTLE_STARTED", "sim_time_ns": 0},
+                {"event": "GRIPPER_SETTLE_FINISHED", "sim_time_ns": 1_000_000_000},
+            ],
+            hold_s=1.0,
+        )
         self.assertFalse(summary["passed"])
-        self.assertIn("missing_side", summary["failure_reasons"])
+        self.assertIn("missing_right_contact", summary["failure_reasons"])
+
+    def test_contact_summary_requires_event_boundaries(self):
+        with self.assertRaisesRegex(ValueError, "events"):
+            summarize_contact_rows([
+                {"sim_time_ns": 0, "side": "left", "normal_force_N": 1.0},
+            ])
+
+    def test_event_window_uses_100hz_grid_and_zero_fills_missing_contact(self):
+        events = [
+            {"event": "GRIPPER_SETTLE_STARTED", "sim_time_ns": 0},
+            {"event": "GRIPPER_SETTLE_FINISHED", "sim_time_ns": 1_000_000_000},
+        ]
+        rows = []
+        for stamp in range(0, 1_000_000_001, 10_000_000):
+            if stamp == 500_000_000:
+                continue
+            for side in ("left", "right"):
+                rows.append({"sim_time_ns": stamp, "side": side, "normal_force_N": 0.8})
+        rows.append({"sim_time_ns": 2_000_000_000, "side": "left", "normal_force_N": 99.0})
+
+        summary = summarize_contact_rows(rows, events=events)
+
+        self.assertEqual(summary["window_start_ns"], 0)
+        self.assertEqual(summary["window_end_ns"], 1_000_000_000)
+        self.assertEqual(summary["grid_hz"], 100.0)
+        self.assertEqual(summary["grid_sample_count"], 101)
+        self.assertAlmostEqual(summary["bilateral_stable_fraction"], 100 / 101)
+        self.assertAlmostEqual(summary["longest_contiguous_bilateral_contact_s"], 0.49)
+        self.assertAlmostEqual(
+            summary["hold_second_half"]["left"]["median_normal_force_N"], 0.8
+        )
+        self.assertFalse(summary["passed"])
+        self.assertIn("bilateral_contact_too_short", summary["failure_reasons"])
+
+    def test_event_window_requires_same_grid_sample_for_bilateral_contact(self):
+        events = [
+            {"event": "GRIPPER_SETTLE_STARTED", "sim_time_ns": 0},
+            {"event": "GRIPPER_SETTLE_FINISHED", "sim_time_ns": 1_000_000_000},
+        ]
+        rows = []
+        for index, stamp in enumerate(range(0, 1_000_000_001, 10_000_000)):
+            side = "left" if index % 2 == 0 else "right"
+            rows.append({"sim_time_ns": stamp, "side": side, "normal_force_N": 0.8})
+
+        summary = summarize_contact_rows(rows, events=events)
+
+        self.assertAlmostEqual(summary["per_side"]["left"]["stable_fraction"], 51 / 101)
+        self.assertAlmostEqual(summary["per_side"]["right"]["stable_fraction"], 50 / 101)
+        self.assertEqual(summary["bilateral_stable_fraction"], 0.0)
+        self.assertIn("bilateral_contact_too_sparse", summary["failure_reasons"])
+
+    def test_event_window_reports_missing_settle_boundary(self):
+        rows = [{"sim_time_ns": 0, "side": "left", "normal_force_N": 0.8}]
+
+        summary = summarize_contact_rows(
+            rows,
+            events=[{"event": "GRIPPER_SETTLE_STARTED", "sim_time_ns": 0}],
+        )
+
+        self.assertFalse(summary["passed"])
+        self.assertIn("missing_gripper_settle_finished", summary["failure_reasons"])
+
+    def test_event_window_rejects_a_settle_window_shorter_than_requested_hold(self):
+        events = [
+            {"event": "GRIPPER_SETTLE_STARTED", "sim_time_ns": 0},
+            {"event": "GRIPPER_SETTLE_FINISHED", "sim_time_ns": 900_000_000},
+        ]
+        rows = [
+            {"sim_time_ns": stamp, "side": side, "normal_force_N": 1.0}
+            for stamp in range(0, 900_000_001, 10_000_000)
+            for side in ("left", "right")
+        ]
+
+        summary = summarize_contact_rows(rows, events=events, hold_s=1.0)
+
+        self.assertFalse(summary["passed"])
+        self.assertIn("settle_window_short", summary["failure_reasons"])
+
+    def test_event_window_reports_joint_effort_velocity_and_symmetry_metrics(self):
+        events = [
+            {"event": "GRIPPER_SETTLE_STARTED", "sim_time_ns": 0},
+            {"event": "GRIPPER_SETTLE_FINISHED", "sim_time_ns": 1_000_000_000},
+        ]
+        rows = [
+            {
+                "sim_time_ns": stamp,
+                "side": side,
+                "normal_force_N": 1.0,
+                "joint7_effort_N": 1.2,
+                "joint8_effort_N": -1.1,
+                "joint7_velocity_m_s": 0.01,
+                "joint8_velocity_m_s": -0.01,
+                "gripper_symmetry_error_m": 0.0002,
+            }
+            for stamp in range(0, 1_000_000_001, 10_000_000)
+            for side in ("left", "right")
+        ]
+
+        summary = summarize_contact_rows(rows, events=events)
+
+        self.assertAlmostEqual(summary["joint_metrics"]["median_effort_abs_N"], 1.15)
+        self.assertAlmostEqual(summary["joint_metrics"]["p95_abs_velocity_m_s"], 0.01)
+        self.assertAlmostEqual(summary["joint_metrics"]["p95_symmetry_error_m"], 0.0002)
+
+    def test_event_window_joint_metrics_ignore_pre_hold_transients(self):
+        events = [
+            {"event": "GRIPPER_SETTLE_STARTED", "sim_time_ns": 0},
+            {"event": "GRIPPER_SETTLE_FINISHED", "sim_time_ns": 1_000_000_000},
+        ]
+        rows = []
+        for stamp in range(0, 1_000_000_001, 10_000_000):
+            effort = 100.0 if stamp < 500_000_000 else 1.0
+            for side in ("left", "right"):
+                rows.append({
+                    "sim_time_ns": stamp,
+                    "side": side,
+                    "normal_force_N": 1.0,
+                    "joint7_effort_N": effort,
+                    "joint8_effort_N": effort,
+                })
+
+        summary = summarize_contact_rows(rows, events=events)
+
+        self.assertEqual(summary["joint_metrics"]["p95_effort_abs_N"], 1.0)
 
 
 if __name__ == "__main__":

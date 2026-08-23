@@ -432,8 +432,13 @@ class CampaignRunner:
         row["cleanup"] = cleanup
         if bool(spec.resolved.get("record_contact_diagnostics", False)):
             contact_path = run_dir / "contact_diagnostics.csv"
+            events_path = run_dir / "events.csv"
             if contact_path.is_file():
-                summarize_contact_file(contact_path, run_dir / "contact_metrics.json")
+                summarize_contact_file(
+                    contact_path,
+                    run_dir / "contact_metrics.json",
+                    events_path=events_path,
+                )
         row["artifacts_complete"] = str(
             artifacts_complete(run_dir, self._extra_artifacts(spec))
         ).lower()

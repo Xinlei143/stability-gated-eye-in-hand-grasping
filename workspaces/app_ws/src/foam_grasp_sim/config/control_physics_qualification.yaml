@@ -22,3 +22,8 @@ gripper:
   # is the physical opening, so each joint receives half the opening.
   joint_position_m_per_mm: 0.0005
   openings_mm: [70.0, 40.0, 70.0]
+  loaded_open_mm: 70.0
+  loaded_close_mm: 40.0
+  loaded_hold_s: 1.0
+  minimum_force_N: 0.8
+  minimum_bilateral_duration_s: 0.8
