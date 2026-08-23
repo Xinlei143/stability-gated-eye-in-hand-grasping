@@ -27,3 +27,15 @@ nvidia-smi.txt
 第三方驱动后都应重新运行并将 `.repos` 与自研源码一起备份。
 
 Orbbec DC1继续使用官方 legacy `main` 分支。Piper和MoveIt不要在部署时盲目切到最新版，应优先使用当前电脑导出的精确提交。
+
+Gazebo grasp stabilization is a separate pinned import. Build it with:
+
+```bash
+bash scripts/setup_gazebo_grasp_plugin.sh
+source scripts/source_env.sh
+```
+
+The exact upstream URL and commit are in `gazebo_grasp_plugin.repos`. The
+standalone CMake adaptation is intentionally kept as a reviewable patch under
+`patches/gazebo_grasp_plugin/`; generated source/build/install trees stay under
+`.external/` and are ignored by Git.

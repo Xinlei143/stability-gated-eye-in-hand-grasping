@@ -41,6 +41,9 @@ def generate_launch_description():
             "condition_json": LaunchConfiguration("condition_json"),
             "robot_xacro": LaunchConfiguration("robot_xacro"),
             "gazebo_executable": LaunchConfiguration("gazebo_executable"),
+            "grasp_stabilization_mode": LaunchConfiguration("grasp_stabilization_mode"),
+            "grasp_assist_mode": LaunchConfiguration("grasp_assist_mode"),
+            "grasp_assist_service": LaunchConfiguration("grasp_assist_service"),
         }.items(),
     )
 
@@ -116,6 +119,9 @@ def generate_launch_description():
         DeclareLaunchArgument("condition_json", default_value="{}"),
         DeclareLaunchArgument("robot_xacro", default_value=str(package_share / "urdf" / "piper_eye_in_hand_physics.xacro")),
         DeclareLaunchArgument("gazebo_executable", default_value="gzserver"),
+        DeclareLaunchArgument("grasp_stabilization_mode", default_value="off"),
+        DeclareLaunchArgument("grasp_assist_mode", default_value="off"),
+        DeclareLaunchArgument("grasp_assist_service", default_value=""),
     ]
     return LaunchDescription(
         declarations

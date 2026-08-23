@@ -134,6 +134,23 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertFalse(status["trial_success"])
             self.assertFalse(status["task_success"])
 
+    def test_execute_terminal_success_requires_physical_metrics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "metrics.json").write_text(json.dumps({
+                "physical_grasp_success": False,
+                "task_success": False,
+                "trial_success": True,
+            }))
+            status = status_for_artifacts(
+                run_dir,
+                {"status": "finished", "trial_success": True, "task_success": True,
+                 "execution_mode": "execute"},
+            )
+            self.assertEqual(status["status"], "failed")
+            self.assertFalse(status["trial_success"])
+            self.assertFalse(status["task_success"])
+
     def test_runner_waits_for_logger_flush_after_terminal_event(self):
         with tempfile.TemporaryDirectory() as directory:
             runner = CampaignRunner(_specs(), Path(directory) / "campaign")

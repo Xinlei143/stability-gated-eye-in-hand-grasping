@@ -10,6 +10,7 @@ defaults:
   use_rviz: false
   grasp_assist_mode: "off"
   grasp_assist_service: ""
+  grasp_stabilization_mode: "gazebo_grasp_fix"
 
   perception_source: ground_truth
 

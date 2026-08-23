@@ -5,12 +5,20 @@ gazebo_ros2_control:
     pid_gains:
       position_pid:
         joint7:
-          kp: 5.0
+          # Kp=30 is the lowest tested passing gain in static grasp-hold
+          # qualification.  About 5 mm/finger steady-state error corresponds
+          # to roughly 0.15 N actuator effort.  Ki=0 avoids integral windup
+          # for the contact-loaded gripper.
+          kp: 30.0
           ki: 0.0
           kd: 0.3
           max_integral_error: 0.0
         joint8:
-          kp: 5.0
+          # Kp=30 is the lowest tested passing gain in static grasp-hold
+          # qualification.  About 5 mm/finger steady-state error corresponds
+          # to roughly 0.15 N actuator effort.  Ki=0 avoids integral windup
+          # for the contact-loaded gripper.
+          kp: 30.0
           ki: 0.0
           kd: 0.3
           max_integral_error: 0.0

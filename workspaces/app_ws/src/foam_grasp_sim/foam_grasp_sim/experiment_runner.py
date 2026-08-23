@@ -69,8 +69,16 @@ def status_for_terminal(event: Mapping[str, Any]) -> dict[str, Any]:
     name = str(event.get("event", "")).upper()
     details = dict(event.get("details") or {})
     if name == "TRIAL_FINISHED":
-        task_success = bool(details.get("task_success", details.get("execution_mode") == "execute"))
-        return {"status": "finished", "trial_success": True, "task_success": task_success}
+        execution_mode = str(details.get("execution_mode", "execute"))
+        if execution_mode == "plan_only":
+            return {
+                "status": "finished", "trial_success": True,
+                "task_success": False, "execution_mode": execution_mode,
+            }
+        return {
+            "status": "finished", "trial_success": False,
+            "task_success": False, "execution_mode": execution_mode,
+        }
     return {"status": "failed", "trial_success": False, "task_success": False}
 
 
@@ -91,19 +99,31 @@ def artifacts_complete(run_dir: Path, extra=()) -> bool:
 def status_for_artifacts(run_dir: Path, status: Mapping[str, Any]) -> dict[str, Any]:
     """Apply post-run physical checks without trusting a command-only success."""
     result = dict(status)
-    if not result.get("task_success"):
+    if result.get("execution_mode") == "plan_only":
         return result
     metrics_path = run_dir / "metrics.json"
     try:
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
+        if result.get("execution_mode") == "execute":
+            return {
+                "status": "failed", "trial_success": False,
+                "task_success": False, "error": "physical metrics missing",
+            }
         return result
-    if metrics.get("physical_grasp_success") is False:
+    if result.get("execution_mode") == "execute":
+        if metrics.get("physical_grasp_success") is True and metrics.get("task_success") is True:
+            return {"status": "finished", "trial_success": True, "task_success": True}
         return {
             "status": "failed",
             "trial_success": False,
             "task_success": False,
             "error": "physical grasp verification failed",
+        }
+    if result.get("task_success") and metrics.get("physical_grasp_success") is not True:
+        return {
+            "status": "failed", "trial_success": False,
+            "task_success": False, "error": "physical grasp verification failed",
         }
     return result
 

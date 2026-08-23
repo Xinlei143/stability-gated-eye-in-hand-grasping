@@ -131,6 +131,27 @@ class BenchmarkToolsTest(unittest.TestCase):
         self.assertFalse(result["physical_grasp_success"])
         self.assertFalse(result["task_success"])
 
+    def test_execution_finished_without_physical_lift_is_not_task_success(self):
+        metrics = MetricsAccumulator()
+        metrics.record_event({"event": "GRIPPER_CLOSED", "sim_time_ns": 1_000_000_000})
+        metrics.record_event({"event": "LIFT_STARTED", "sim_time_ns": 2_000_000_000})
+        metrics.record_event({"event": "EXECUTION_FINISHED", "sim_time_ns": 3_000_000_000})
+        metrics.record_event({"event": "TRIAL_FINISHED", "sim_time_ns": 3_000_000_000,
+                              "details": {"execution_mode": "execute"}})
+        for time_ns in range(1_000_000_000, 4_000_000_001, 100_000_000):
+            metrics.record_state({
+                "sim_time_ns": time_ns,
+                "target_ground_truth_x": 0.4,
+                "target_ground_truth_y": 0.0,
+                "target_ground_truth_z": 0.026,
+                "tcp_x": 0.4,
+                "tcp_y": 0.0,
+                "tcp_z": 0.081,
+            })
+        result = metrics.finalize()
+        self.assertFalse(result["physical_grasp_success"])
+        self.assertFalse(result["task_success"])
+
     def test_finished_event_with_lifted_target_is_physical_success(self):
         metrics = MetricsAccumulator()
         metrics.record_event({"event": "TARGET_OBSERVED", "sim_time_ns": 0})

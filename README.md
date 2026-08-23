@@ -51,6 +51,28 @@ The repository also includes a reproducible Gazebo/MoveIt simulation and evaluat
 - run-level telemetry and metrics for tracking error, readiness error, grasp-initiation error, time-to-ready, gate resets, planning success, and task success;
 - offline paired analysis, deterministic bootstrap confidence intervals, result tables, and publication-oriented plots.
 
+### Gazebo grasp stabilization backend
+
+The formal simulator baseline uses `grasp_stabilization_mode:=gazebo_grasp_fix`.
+This selects the pinned `gazebo_grasp_fix` plugin and the no-attachment world;
+the legacy contact-confirmed attach service remains off. The plugin only
+stabilizes an already commanded grasp in Gazebo. It does not replace
+perception, target tracking, readiness gating, target commitment, or the grasp
+trigger. Mechanical task success is accepted only from the physical lift/hold
+fields in `metrics.json`, never from attachment or motion completion alone.
+
+Install the pinned third-party plugin once, then source the project runtime:
+
+```bash
+bash scripts/setup_gazebo_grasp_plugin.sh
+source scripts/source_env.sh
+```
+
+The setup script records the exact upstream revision in
+`dependencies/gazebo_grasp_plugin.repos` and installs the shared library under
+`.external/gazebo-grasp-install/lib/`. See `THIRD_PARTY.md` for license and
+patch provenance.
+
 ## Reproducible simulation and benchmarking
 
 The simulation framework provides controlled evaluation of three target-selection and tracking policies:

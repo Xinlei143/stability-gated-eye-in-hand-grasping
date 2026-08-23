@@ -208,8 +208,22 @@ class SceneAssetTest(unittest.TestCase):
             self.assertNotIn(name, pid)
         self.assertEqual(pid["joint7"]["ki"], 0.0)
         self.assertEqual(pid["joint8"]["ki"], 0.0)
-        self.assertGreater(pid["joint7"]["kp"], 0.0)
-        self.assertGreater(pid["joint8"]["kp"], 0.0)
+        self.assertEqual(pid["joint7"]["kp"], 30.0)
+        self.assertEqual(pid["joint8"]["kp"], 30.0)
+
+    def test_grasp_fix_wrapper_is_separate_from_physics_only_wrapper(self):
+        physics = (PACKAGE_ROOT / "urdf" / "piper_eye_in_hand_physics.xacro").read_text()
+        wrapper = (PACKAGE_ROOT / "urdf" / "piper_eye_in_hand_grasp_fix.xacro").read_text()
+        self.assertNotIn("libgazebo_grasp_fix.so", physics)
+        for token in ("libgazebo_grasp_fix.so", "<palm_link>link6</palm_link>",
+                      "<gripper_link>link7</gripper_link>", "<gripper_link>link8</gripper_link>",
+                      "<forces_angle_tolerance>100</forces_angle_tolerance>",
+                      "<update_rate>10</update_rate>",
+                      "<grip_count_threshold>2</grip_count_threshold>",
+                      "<max_grip_count>3</max_grip_count>",
+                      "<release_tolerance>0.005</release_tolerance>",
+                      "<disable_collisions_on_attach>false</disable_collisions_on_attach>"):
+            self.assertIn(token, wrapper)
 
     def test_loaded_qualification_fixture_is_explicit_and_mode_is_supported(self):
         qualification = (PACKAGE_ROOT / "foam_grasp_sim" / "control_physics_qualification_node.py").read_text()

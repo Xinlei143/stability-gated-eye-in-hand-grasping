@@ -8,6 +8,7 @@ workspaces/orbbec_ws/src/*
 workspaces/piper_ws/src/*
 workspaces/moveit_ws/src/*
 workspaces/piper_ws/_upstream/
+/.external/
 !workspaces/orbbec_ws/src/.gitkeep
 !workspaces/piper_ws/src/.gitkeep
 !workspaces/moveit_ws/src/.gitkeep

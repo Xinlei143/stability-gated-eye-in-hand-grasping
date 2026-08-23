@@ -10,6 +10,16 @@ their own upstream licenses and notices:
 - MoveIt 2: <https://github.com/moveit/moveit2>
 - MoveIt messages: <https://github.com/ros-planning/moveit_msgs>
 - MoveIt resources: <https://github.com/ros-planning/moveit_resources>
+- gazebo_grasp_fix: <https://github.com/JenniferBuehler/gazebo-pkgs>
+
+`gazebo_grasp_fix` is imported at commit
+`d217a4cd3045cb9622936784658ea687e0e6b69f` as recorded in
+`dependencies/gazebo_grasp_plugin.repos`. This repository carries the small
+standalone Gazebo 11 CMake integration in
+`patches/gazebo_grasp_plugin/0001-standalone-gazebo11-cmake.patch`; it does not
+modify the plugin's grasp logic. The upstream repository's root notice is
+BSD-3-Clause while the plugin package declares GPL-3.0-or-later, so retain both
+notices and review redistribution obligations before publishing a binary.
 
 The reproducible import step applies the project-owned configuration patch
 `patches/piper_ros/0001-use-kdl-kinematics.patch` after restoring the pinned
