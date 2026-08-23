@@ -21,8 +21,11 @@ execution:
   execution_backend: simulation
   arm_trajectory_action: /arm_controller/follow_joint_trajectory
   gripper_trajectory_action: /gripper_controller/follow_joint_trajectory
+  gripper8_trajectory_action: /gripper8_controller/follow_joint_trajectory
   gripper_joint_name: joint7
+  gripper8_joint_name: joint8
   gripper_feedback_topic: /gripper_controller/controller_state
+  gripper8_feedback_topic: /gripper8_controller/controller_state
   # Piper Gazebo joint7 is one 35 mm jaw.  foam_grasp uses total opening.
   gripper_command_scale: 0.5
   gripper_feedback_scale: 2.0

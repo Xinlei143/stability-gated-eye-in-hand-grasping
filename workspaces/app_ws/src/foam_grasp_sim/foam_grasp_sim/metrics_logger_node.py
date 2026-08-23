@@ -28,7 +28,8 @@ STATE_FIELDS = (
     "target_selected_x", "target_selected_y", "target_selected_z",
     "target_latched_x", "target_latched_y", "target_latched_z",
     "tcp_x", "tcp_y", "tcp_z",
-    "joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper",
+    "joint1", "joint2", "joint3", "joint4", "joint5", "joint6",
+    "gripper", "gripper8", "gripper_total_opening", "gripper_symmetry_error",
     "gate_ready", "method_state", "method", "scenario", "seed",
     "observation_valid", "observation_age_s", "selected_age_s", "latched_age_s",
 )
@@ -45,6 +46,12 @@ def _message_stamp_ns(message):
     if message is None:
         return None
     return int(message.header.stamp.sec) * 1_000_000_000 + int(message.header.stamp.nanosec)
+
+
+def _joint_state_fields(joints):
+    """Map ROS joint names onto the stable states.csv column names."""
+    names = {"joint7": "gripper", "joint8": "gripper8"}
+    return {names.get(name, name): value for name, value in joints.items()}
 
 
 class MetricsLoggerNode(Node):
@@ -152,7 +159,8 @@ class MetricsLoggerNode(Node):
     def joint_callback(self, message):
         values = dict(zip(message.name, message.position))
         self.joints = {name: float(values[name]) for name in (
-            "joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "joint7"
+            "joint1", "joint2", "joint3", "joint4", "joint5", "joint6",
+            "joint7", "joint8"
         ) if name in values}
 
     def event_callback(self, message):
@@ -222,8 +230,12 @@ class MetricsLoggerNode(Node):
         tcp = self.tcp_position()
         if tcp is not None:
             row.update({f"tcp_{axis}": value for axis, value in zip("xyz", tcp)})
-        for name, value in self.joints.items():
-            row["gripper" if name == "joint7" else name] = value
+        row.update(_joint_state_fields(self.joints))
+        joint7 = self.joints.get("joint7")
+        joint8 = self.joints.get("joint8")
+        if joint7 is not None and joint8 is not None:
+            row["gripper_total_opening"] = joint7 - joint8
+            row["gripper_symmetry_error"] = abs(joint7 + joint8)
         self.states.append(row)
         self.metrics.record_state(row)
 

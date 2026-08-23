@@ -14,6 +14,7 @@ from foam_grasp_sim.experiment_runner import (
     artifacts_complete,
     parse_terminal_line,
     signal_process_group,
+    status_for_artifacts,
     status_for_terminal,
 )
 from foam_grasp_sim.benchmark_suite import expand_suite
@@ -116,6 +117,21 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertEqual(rows[0]["status"], "finished")
             self.assertEqual(rows[0]["task_success"], "false")
             self.assertIn("TRIAL_FINISHED", rows[0]["terminal_event"])
+
+    def test_physical_artifact_failure_overrides_finished_terminal_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "metrics.json").write_text(json.dumps({
+                "physical_grasp_success": False,
+                "task_success": False,
+            }))
+            status = status_for_artifacts(
+                run_dir,
+                {"status": "finished", "trial_success": True, "task_success": True},
+            )
+            self.assertEqual(status["status"], "failed")
+            self.assertFalse(status["trial_success"])
+            self.assertFalse(status["task_success"])
 
     def test_runner_waits_for_logger_flush_after_terminal_event(self):
         with tempfile.TemporaryDirectory() as directory:

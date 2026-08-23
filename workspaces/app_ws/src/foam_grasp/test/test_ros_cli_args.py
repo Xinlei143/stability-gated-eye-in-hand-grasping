@@ -54,6 +54,13 @@ class RosLaunchArgumentTest(unittest.TestCase):
         self.assertIn("terminal_emitted = False", source)
         self.assertIn("if terminal_emitted:\n            return 0", source)
 
+    def test_contact_confirmed_grasp_assist_is_prepared_before_lift(self):
+        source = (Path(__file__).parents[1] / "foam_grasp" / "foam_cube_grasp_sequence.py").read_text()
+        self.assertIn('declare_parameter("grasp_assist_service", "")', source)
+        prepare = source.index("prepare_grasp_assist")
+        lift = source.index('node.operator_gate(\n            f"确认{args.target_class}已被夹住')
+        self.assertLess(prepare, lift)
+
 
 if __name__ == "__main__":
     unittest.main()
