@@ -128,6 +128,7 @@ class BenchmarkSuiteTest(unittest.TestCase):
         expected = {
             "smoke", "baseline_comparison", "latency_sweep", "noise_sweep",
             "dropout_sweep", "gate_ablation", "core_baseline_formal",
+            "grasp_physics_qualification",
         }
         self.assertEqual({path.stem for path in root.glob("*.yaml")}, expected)
         for name in sorted(expected):
@@ -146,6 +147,22 @@ class BenchmarkSuiteTest(unittest.TestCase):
                 self.assertTrue(
                     all(trial.resolved["grasp_assist_mode"] == "off" for trial in trials)
                 )
+            if name == "grasp_physics_qualification":
+                self.assertEqual(len(trials), 1)
+                self.assertEqual(trials[0].method, "snapshot")
+                self.assertEqual(trials[0].trajectory, "static")
+                self.assertEqual(trials[0].seed, 42)
+                self.assertTrue(trials[0].execute_motion)
+                self.assertEqual(trials[0].resolved["move_duration"], 4.0)
+                self.assertEqual(trials[0].resolved["stop_duration"], 6.0)
+                self.assertEqual(trials[0].resolved["post_close_hold_s"], 1.0)
+                self.assertEqual(trials[0].resolved["auto_pause_s"], 0.5)
+                self.assertEqual(trials[0].resolved["countdown_seconds"], 0)
+                self.assertTrue(trials[0].resolved["record_contact_diagnostics"])
+                self.assertIn("record_contact_diagnostics:=true", trials[0].launch_args)
+                self.assertIn("post_close_hold_s:=1.0", trials[0].launch_args)
+                self.assertIn("auto_pause_s:=0.5", trials[0].launch_args)
+                self.assertIn("countdown_seconds:=0", trials[0].launch_args)
 
     def test_standard_suites_have_unique_deterministic_run_ids(self):
         root = Path(__file__).resolve().parents[1] / "config" / "benchmark_suites"

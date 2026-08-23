@@ -61,6 +61,22 @@ class RosLaunchArgumentTest(unittest.TestCase):
         lift = source.index('node.operator_gate(\n            f"确认{args.target_class}已被夹住')
         self.assertLess(prepare, lift)
 
+    def test_gripper_margin_is_reported_as_jaw_blocking_evidence(self):
+        source = (Path(__file__).parents[1] / "foam_grasp" / "foam_cube_grasp_sequence.py").read_text()
+        self.assertIn("jaw_blocked_margin_mm", source)
+        self.assertIn('"JAW_BLOCKED"', source)
+        self.assertNotIn('"夹持确认："', source)
+
+    def test_sequence_accepts_a_post_close_hold_duration(self):
+        args = parse_sequence_args(
+            [
+                "--execution-backend", "simulation",
+                "--target-class", "cube",
+                "--post-close-hold-s", "1.0",
+            ]
+        )
+        self.assertAlmostEqual(args.post_close_hold_s, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -138,6 +138,5 @@ class ExecutionBackendTest(unittest.TestCase):
         self.assertNotIn("def _real_", pregrasp_source)
         self.assertNotIn("def _real_", sequence_source)
 
-
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<!--
+  Local simulation wrapper.  The included Gazebo description keeps the
+  pinned Piper geometry and interfaces; piper_sim.launch.py adds the
+  simulation-only physics PID overlay to Gazebo's parameter set.
+-->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="piper_eye_in_hand_physics">
+  <!-- physics PID overlay is supplied by ros2_controllers_physics.yaml -->
+  <xacro:include
+    filename="$(find foam_grasp_sim)/urdf/piper_eye_in_hand_gazebo.xacro"/>
+</robot>

@@ -14,6 +14,7 @@ from foam_grasp_sim.experiment_runner import (
     artifacts_complete,
     parse_terminal_line,
     signal_process_group,
+    stop_process_group,
     status_for_artifacts,
     status_for_terminal,
 )
@@ -137,6 +138,70 @@ class ExperimentRunnerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             runner = CampaignRunner(_specs(), Path(directory) / "campaign")
             self.assertGreaterEqual(runner.logger_flush_grace_s, 0.5)
+
+    def test_runner_passes_runtime_isolation_to_child(self):
+        observed = {}
+
+        def factory(command, **kwargs):
+            observed.update(kwargs["env"])
+            script = (
+                "import json; "
+                "print('BENCHMARK_TERMINAL_EVENT=' + json.dumps({"
+                "'schema_version':1,'event':'TRIAL_FINISHED','sim_time_ns':1,"
+                "'method':'gated','scenario':'static','seed':42,'details':{"
+                "'execution_mode':'plan_only','task_success':False}}), flush=True)"
+            )
+            return subprocess.Popen([sys.executable, "-c", script], **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            runner = CampaignRunner(
+                _specs(),
+                Path(directory) / "campaign",
+                ros_domain_id=77,
+                gazebo_master_uri="http://127.0.0.1:11447",
+                popen_factory=factory,
+            )
+            runner.run(suite_name="runner-unit", suite_hash="x")
+        self.assertEqual(observed["ROS_DOMAIN_ID"], "77")
+        self.assertEqual(observed["GAZEBO_MASTER_URI"], "http://127.0.0.1:11447")
+        self.assertEqual(observed["ROS_LOCALHOST_ONLY"], "1")
+
+    def test_runner_rewrites_contact_diagnostics_to_the_run_directory(self):
+        specs = expand_suite({
+            "schema_version": 1,
+            "name": "contact-path",
+            "defaults": {
+                "target_model": "cube",
+                "execute_motion": True,
+                "record_contact_diagnostics": True,
+            },
+            "methods": ["snapshot"],
+            "trajectories": ["static"],
+            "seeds": [42],
+            "sweeps": [],
+        })
+        with tempfile.TemporaryDirectory() as directory:
+            runner = CampaignRunner(specs, Path(directory) / "campaign")
+            command, run_dir, _ = runner._command(specs[0], 1)
+        self.assertIn("record_contact_diagnostics:=true", command)
+        self.assertIn(
+            f"contact_diagnostics_output:={run_dir / 'contact_diagnostics.csv'}",
+            command,
+        )
+
+    def test_cleanup_signals_group_after_launch_leader_exits(self):
+        script = (
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', 'import signal,time; signal.signal(signal.SIGINT, signal.SIG_IGN); time.sleep(30)']); "
+            "time.sleep(0.2)"
+        )
+        leader = subprocess.Popen(
+            [sys.executable, "-c", script],
+            start_new_session=True,
+        )
+        leader.wait(timeout=3)
+        cleanup = stop_process_group(leader, pgid=leader.pid, grace_s=0.2)
+        self.assertIn(cleanup, {"sigint", "sigterm", "sigkill", "already_exited"})
 
     def test_timeout_marks_trial_and_preserves_log(self):
         def factory(command, **kwargs):

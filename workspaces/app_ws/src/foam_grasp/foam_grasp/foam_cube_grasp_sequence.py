@@ -1230,12 +1230,18 @@ def parse_args(argv=None):
     parser.add_argument("--preopen-opening-mm", type=float, default=70.0)
     parser.add_argument("--close-opening-mm", type=float, default=40.0)
     parser.add_argument(
+        "--post-close-hold-s",
+        type=float,
+        default=0.0,
+        help="夹爪闭合后保持目标开口的时间，默认0秒；qualification可设为1秒",
+    )
+    parser.add_argument(
         "--minimum-grip-margin-mm",
         type=float,
         default=5.0,
         help=(
-            "夹持确认阈值：闭合后的实际开口必须至少比闭合命令大该值；"
-            "否则视为未夹住并拒绝抬升"
+            "接触阻挡证据阈值：闭合后的实际开口必须至少比闭合命令大该值；"
+            "否则拒绝抬升；该值不等同于物理夹持力确认"
         ),
     )
     parser.add_argument(
@@ -1273,6 +1279,8 @@ def parse_args(argv=None):
         parser.error("--preopen-opening-mm必须在60到110之间")
     if not 30.0 <= args.close_opening_mm <= 60.0:
         parser.error("--close-opening-mm必须在30到60之间")
+    if not 0.0 <= args.post_close_hold_s <= 30.0:
+        parser.error("--post-close-hold-s必须在0到30秒之间")
     if not 3.0 <= args.minimum_grip_margin_mm <= 15.0:
         parser.error("--minimum-grip-margin-mm必须在3到15之间")
     if args.close_opening_mm >= args.preopen_opening_mm - 5.0:
@@ -1541,16 +1549,36 @@ def main(argv=None):
             "GRIPPER_CLOSED",
             details={"opening_m": close_feedback, "target_m": close_target_m},
         )
-        grip_margin_mm = (close_feedback - close_target_m) * 1000.0
-        print(
-            "夹持确认："
-            f"实际开口比闭合命令大{grip_margin_mm:.1f} mm，"
-            f"要求至少{args.minimum_grip_margin_mm:.1f} mm"
+        jaw_blocked_margin_mm = (close_feedback - close_target_m) * 1000.0
+        node.emit_event(
+            "JAW_BLOCKED",
+            details={
+                "opening_m": close_feedback,
+                "target_m": close_target_m,
+                "jaw_blocked_margin_mm": jaw_blocked_margin_mm,
+                "physical_grip_confirmed": False,
+            },
         )
-        if grip_margin_mm < args.minimum_grip_margin_mm:
+        print(
+            "接触阻挡证据："
+            f"实际开口比闭合命令大{jaw_blocked_margin_mm:.1f} mm，"
+            f"要求至少{args.minimum_grip_margin_mm:.1f} mm；"
+            "尚未由接触力确认物理夹持"
+        )
+        if jaw_blocked_margin_mm < args.minimum_grip_margin_mm:
             raise RuntimeError(
-                f"未确认夹住{args.target_class}：夹持余量仅"
-                f"{grip_margin_mm:.1f}mm；拒绝抬升"
+                f"未获得{args.target_class}的接触阻挡证据：余量仅"
+                f"{jaw_blocked_margin_mm:.1f}mm；拒绝抬升"
+            )
+        if args.post_close_hold_s > 0.0:
+            node.emit_event(
+                "GRIPPER_SETTLE_STARTED",
+                details={"duration_s": args.post_close_hold_s},
+            )
+            node.spin_for(args.post_close_hold_s)
+            node.emit_event(
+                "GRIPPER_SETTLE_FINISHED",
+                details={"duration_s": args.post_close_hold_s},
             )
         node.prepare_grasp_assist()
         node.operator_gate(

@@ -79,7 +79,7 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn("piper_description_gazebo.xacro", piper)
         self.assertIn("gazebo_ros2_control", piper)
         self.assertNotIn("joint8_ctrl.py", piper)
-        self.assertIn("piper_eye_in_hand_gazebo.xacro", piper)
+        self.assertIn("piper_eye_in_hand_physics.xacro", piper)
         self.assertIn("grasp_table.world", piper)
         for controller in (
             "joint_state_broadcaster",
@@ -88,6 +88,7 @@ class SceneAssetTest(unittest.TestCase):
             "gripper8_controller",
         ):
             self.assertIn(controller, piper)
+        self.assertNotIn("arm_startup_hold", piper)
         self.assertIn("allow_trajectory_execution", moveit)
         self.assertIn('"allow_trajectory_execution": False', moveit)
         self.assertNotIn("joint_states_single", moveit)
@@ -172,11 +173,86 @@ class SceneAssetTest(unittest.TestCase):
         piper = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
         self.assertIn('"robot_xacro",', piper)
         self.assertIn('LaunchConfiguration("robot_xacro")', piper)
+        self.assertIn("piper_eye_in_hand_physics.xacro", piper)
+        self.assertIn("render_physics_description", piper)
+        self.assertIn("get_package_prefix", piper)
+        self.assertIn("ros2_controllers_physics.yaml", piper)
         self.assertIn("default_value=str(default_robot_xacro)", piper)
+
+    def test_physics_xacro_uses_position_pid_for_both_fingers(self):
+        path = PACKAGE_ROOT / "urdf" / "piper_eye_in_hand_physics.xacro"
+        text = path.read_text()
+        self.assertIn("piper_eye_in_hand_gazebo.xacro", text)
+        self.assertIn("physics PID overlay", text)
+
+    def test_physics_controller_config_declares_gripper_position_controllers(self):
+        config = yaml.safe_load(
+            (PACKAGE_ROOT / "config" / "ros2_controllers_physics.yaml").read_text()
+        )
+        self.assertEqual(
+            config["gripper_controller"]["ros__parameters"]["command_interfaces"],
+            ["position"],
+        )
+        self.assertEqual(
+            config["gripper8_controller"]["ros__parameters"]["command_interfaces"],
+            ["position"],
+        )
+        pid = config["gazebo_ros2_control"]["ros__parameters"]["pid_gains"]["position_pid"]
+        for name in ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6"):
+            self.assertNotIn(name, pid)
+        self.assertEqual(pid["joint7"]["ki"], 0.0)
+        self.assertEqual(pid["joint8"]["ki"], 0.0)
+        self.assertGreater(pid["joint7"]["kp"], 0.0)
+        self.assertGreater(pid["joint8"]["kp"], 0.0)
+
+    def test_control_qualification_config_is_target_free_and_three_stage_ready(self):
+        config = yaml.safe_load(
+            (PACKAGE_ROOT / "config" / "control_physics_qualification.yaml").read_text()
+        )
+        self.assertEqual(config["cycles"], 5)
+        self.assertEqual(
+            [item["name"] for item in config["arm"]["sequence"]],
+            ["home", "pregrasp_like", "safe_pose", "return"],
+        )
+        self.assertEqual(config["gripper"]["openings_mm"], [70.0, 40.0, 70.0])
+
+    def test_control_qualification_launch_does_not_spawn_a_target(self):
+        launch = (
+            PACKAGE_ROOT / "launch" / "control_physics_qualification.launch.py"
+        ).read_text()
+        self.assertIn("control_physics_qualification", launch)
+        self.assertIn("piper_sim.launch.py", launch)
+        self.assertNotIn("foam_cube", launch)
+        self.assertNotIn("sim_bringup.launch.py", launch)
 
     def test_sim_bringup_forwards_robot_xacro_to_piper_launch(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         self.assertIn('LaunchConfiguration("robot_xacro")', bringup)
+        self.assertIn("piper_eye_in_hand_physics.xacro", bringup)
+
+    def test_contact_diagnostics_is_opt_in_and_has_a_csv_output_argument(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        self.assertIn('executable="contact_diagnostics_node"', bringup)
+        self.assertIn('"use_sim_time": execution["use_sim_time"]', bringup)
+        self.assertIn('"record_contact_diagnostics"', bringup)
+        self.assertIn('"contact_diagnostics_output"', bringup)
+
+    def test_target_spawn_failure_stops_pipeline_before_sequence_start(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        self.assertIn("event.returncode", bringup)
+        self.assertIn("Shutdown", bringup)
+        self.assertIn("plan_sequence", bringup)
+        self.assertNotIn("TimerAction(period=10.0, actions=[plan_sequence, execute_sequence])", bringup)
+
+    def test_physics_qualification_has_a_configurable_post_close_hold(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        sequence = (PACKAGE_ROOT.parent / "foam_grasp" / "foam_grasp" / "foam_cube_grasp_sequence.py").read_text()
+        self.assertIn('"post_close_hold_s"', bringup)
+        self.assertIn("--post-close-hold-s", sequence)
+        self.assertIn('"auto_pause_s"', bringup)
+        self.assertIn("--auto-pause", sequence)
+        self.assertIn('"countdown_seconds"', bringup)
+        self.assertIn("--countdown-seconds", bringup)
 
     def test_grasp_assist_is_opt_in_and_world_loads_attachment_plugin(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
@@ -339,6 +415,7 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn("states.csv", logger)
         self.assertIn("events.csv", logger)
         self.assertIn("metrics.json", logger)
+        self.assertIn("self.run_dir.mkdir(parents=True, exist_ok=True)", logger)
         self.assertIn("schema_version", events)
 
     def test_python_nodes_install_into_ros2_lib_directory(self):

@@ -1,0 +1,41 @@
+schema_version: 1
+name: grasp_physics_qualification
+
+defaults:
+  target_model: cube
+  execute_motion: true
+  run_grasp_pipeline: true
+  record_benchmark: true
+  record_contact_diagnostics: true
+  use_rviz: false
+  grasp_assist_mode: "off"
+  perception_source: ground_truth
+  trajectory: static
+  scenario: static
+  post_close_hold_s: 1.0
+  # Keep the qualification deterministic without letting the uncommanded
+  # upstream arm drift for several seconds before the first plan request.
+  auto_pause_s: 0.5
+  countdown_seconds: 0
+  latency_ms: 0.0
+  noise_std_mm: 0.0
+  dropout_probability: 0.0
+  outlier_probability: 0.0
+  outlier_range_mm: 0.0
+  velocity_x: 0.0
+  velocity_y: 0.0
+  velocity_z: 0.0
+  # Keep target_motion_node's validated positive durations even though the
+  # static trajectory does not move the target.
+  move_duration: 4.0
+  stop_duration: 6.0
+  stability_duration: 5.0
+  position_spread_threshold: 0.006
+  minimum_stable_samples: 25
+  observation_timeout: 1.0
+  timeout_s: 120.0
+
+methods: [snapshot]
+trajectories: [static]
+seeds: [42]
+sweeps: []
