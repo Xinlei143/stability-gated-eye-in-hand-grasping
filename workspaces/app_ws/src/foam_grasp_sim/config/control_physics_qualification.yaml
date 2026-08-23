@@ -1,0 +1,24 @@
+# Fixed, collision-free arm vectors copied from the last pre-PID qualification
+# artifact: results/qualification_physical_static_s42_clean2/.../states.csv.
+# The values are explicit so arm-only qualification does not invoke MoveIt or
+# depend on a target model.
+cycles: 5
+trajectory_duration_s: 2.0
+action_timeout_s: 30.0
+
+arm:
+  sequence:
+    - name: home
+      positions: [0.0000, 0.0000, 0.0000, 0.0150, 0.0380, -0.0150]
+    - name: pregrasp_like
+      positions: [0.0000, 1.7600, -1.1800, 0.0000, 0.7300, 0.0000]
+    - name: safe_pose
+      positions: [0.0000, 1.8500, -1.0700, 0.0000, 0.5250, 0.0000]
+    - name: return
+      positions: [0.0000, 0.0000, 0.0000, 0.0150, 0.0380, -0.0150]
+
+gripper:
+  # joint7 and joint8 are symmetric prismatic coordinates; their difference
+  # is the physical opening, so each joint receives half the opening.
+  joint_position_m_per_mm: 0.0005
+  openings_mm: [70.0, 40.0, 70.0]

@@ -1,5 +1,6 @@
 import types
 import unittest
+import xml.etree.ElementTree as ET
 
 from foam_grasp_sim.contact_diagnostics import extract_contact_rows
 from foam_grasp_sim.contact_diagnostics_node import CONTACT_FIELDS
@@ -30,45 +31,102 @@ class ContactDiagnosticsTest(unittest.TestCase):
 
     def test_rendered_physics_description_exports_finger_effort_states(self):
         source = (
-            '<robot><ros2_control><joint name="joint7">'
-            '<state_interface name="position"/>'
-            '</joint><joint name="joint8">'
-            '<state_interface name="position"/>'
-            '</joint></ros2_control><plugin '
+            '<robot><ros2_control name="GazeboSystem" type="system">'
+            '<hardware><plugin>gazebo_ros2_control/GazeboSystem</plugin></hardware>'
+            '<joint name="joint1"><command_interface name="position"/>'
+            '<state_interface name="position"/></joint>'
+            + "".join(
+                f'<joint name="joint{i}"><command_interface name="position"/></joint>'
+                for i in range(2, 7)
+            )
+            +
+            '<joint name="joint7"><command_interface name="position"/>'
+            '<state_interface name="position"/></joint>'
+            '<joint name="joint8"><command_interface name="position"/>'
+            '<state_interface name="position"/></joint>'
+            '</ros2_control><gazebo><plugin '
             'filename="libgazebo_ros2_control.so"><parameters>upstream.yaml</parameters>'
-            '</plugin></robot>'
+            '</plugin></gazebo></robot>'
         )
 
         rendered = inject_pid_parameters(source, "/tmp/pid.yaml")
 
         self.assertEqual(rendered.count('<state_interface name="effort" />'), 2)
 
-    def test_rendered_physics_description_uses_position_pid_for_controlled_joints(self):
+    def test_rendered_physics_description_splits_arm_and_gripper_control_systems(self):
         source = (
-            '<robot><ros2_control><joint name="joint1">'
-            '<command_interface name="position"/>'
-            '</joint><joint name="joint7">'
-            '<command_interface name="position"/>'
-            '</joint><joint name="joint8">'
-            '<command_interface name="position"/>'
-            '</joint></ros2_control><plugin '
+            '<robot><ros2_control name="GazeboSystem" type="system">'
+            '<hardware><plugin>gazebo_ros2_control/GazeboSystem</plugin></hardware>'
+            '<joint name="joint1"><command_interface name="position"/>'
+            '<state_interface name="position"/></joint>'
+            '<joint name="joint2"><command_interface name="position"/></joint>'
+            '<joint name="joint3"><command_interface name="position"/></joint>'
+            '<joint name="joint4"><command_interface name="position"/></joint>'
+            '<joint name="joint5"><command_interface name="position"/></joint>'
+            '<joint name="joint6"><command_interface name="position"/></joint>'
+            '<joint name="joint7"><command_interface name="position"/></joint>'
+            '<joint name="joint8"><command_interface name="position"/></joint>'
+            '</ros2_control><gazebo><plugin '
             'filename="libgazebo_ros2_control.so"><parameters>upstream.yaml</parameters>'
-            '</plugin></robot>'
+            '</plugin></gazebo></robot>'
         )
 
         rendered = inject_pid_parameters(source, "/tmp/pid.yaml")
+        root = ET.fromstring(rendered)
+        systems = {system.attrib["name"]: system for system in root.findall("ros2_control")}
 
-        self.assertEqual(rendered.count('name="position_pid"'), 3)
-        self.assertNotIn('name="position" />', rendered)
+        self.assertEqual(set(systems), {"PiperArmSystem", "PiperGripperSystem"})
+        arm = systems["PiperArmSystem"]
+        gripper = systems["PiperGripperSystem"]
+        self.assertEqual(
+            {joint.attrib["name"] for joint in arm.findall("joint")},
+            {f"joint{i}" for i in range(1, 7)},
+        )
+        self.assertEqual(
+            {joint.attrib["name"] for joint in gripper.findall("joint")},
+            {"joint7", "joint8"},
+        )
+        self.assertEqual(
+            {command.attrib["name"] for command in arm.findall("joint/command_interface")},
+            {"position"},
+        )
+        self.assertEqual(
+            {command.attrib["name"] for command in gripper.findall("joint/command_interface")},
+            {"position_pid"},
+        )
+        self.assertFalse(arm.findall("joint/state_interface[@name='effort']"))
+        self.assertEqual(len(gripper.findall("joint/state_interface[@name='effort']")), 2)
+
+    def test_rendered_physics_description_rejects_incomplete_control_system(self):
+        source = (
+            '<robot><ros2_control name="GazeboSystem" type="system">'
+            '<hardware><plugin>gazebo_ros2_control/GazeboSystem</plugin></hardware>'
+            '<joint name="joint1"><command_interface name="position"/></joint>'
+            '</ros2_control><gazebo><plugin '
+            'filename="libgazebo_ros2_control.so"/></gazebo></robot>'
+        )
+
+        with self.assertRaises(ValueError):
+            inject_pid_parameters(source, "/tmp/pid.yaml")
 
     def test_pid_parameter_injection_is_idempotent(self):
         source = (
-            '<robot><plugin filename="libgazebo_ros2_control.so">'
-            '<parameters>/tmp/pid.yaml</parameters>'
-            '</plugin></robot>'
+            '<robot><ros2_control name="PiperArmSystem" type="system">'
+            '<hardware><plugin>gazebo_ros2_control/GazeboSystem</plugin></hardware>'
+            + "".join(
+                f'<joint name="joint{i}"><command_interface name="position"/></joint>'
+                for i in range(1, 7)
+            )
+            + '</ros2_control><ros2_control name="PiperGripperSystem" type="system">'
+            '<hardware><plugin>gazebo_ros2_control/GazeboSystem</plugin></hardware>'
+            '<joint name="joint7"><command_interface name="position_pid"/></joint>'
+            '<joint name="joint8"><command_interface name="position_pid"/></joint>'
+            '</ros2_control><gazebo><plugin filename="libgazebo_ros2_control.so">'
+            '<parameters>/tmp/pid.yaml</parameters></plugin></gazebo></robot>'
         )
         rendered = inject_pid_parameters(source, "/tmp/pid.yaml")
-        self.assertEqual(rendered.count("/tmp/pid.yaml"), 1)
+        rendered_again = inject_pid_parameters(rendered, "/tmp/pid.yaml")
+        self.assertEqual(rendered_again.count("/tmp/pid.yaml"), 1)
 
     def test_extracts_normal_and_tangential_force_for_target_contact(self):
         state = types.SimpleNamespace(

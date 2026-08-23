@@ -9,9 +9,10 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, RegisterEventHandler, Shutdown
+from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
-from launch.substitutions import Command, FindExecutable, LaunchConfiguration
+from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
@@ -33,6 +34,9 @@ def generate_launch_description():
         Path(simulation_share) / "urdf" / "piper_eye_in_hand_physics.xacro"
     )
     robot_xacro = LaunchConfiguration("robot_xacro")
+    qualification_mode = LaunchConfiguration("qualification_mode")
+    qualification_config = LaunchConfiguration("qualification_config")
+    qualification_output = LaunchConfiguration("qualification_output")
     physics_pid_config = Path(simulation_share) / "config" / "ros2_controllers_physics.yaml"
     physics_renderer = (
         Path(get_package_prefix("foam_grasp_sim"))
@@ -93,12 +97,20 @@ def generate_launch_description():
     arm_controller = _controller_spawner("arm_controller")
     gripper_controller = _controller_spawner("gripper_controller")
     gripper8_controller = _controller_spawner("gripper8_controller")
-    arm_startup_hold = Node(
+    qualification_node = Node(
         package="foam_grasp_sim",
-        executable="arm_startup_hold",
+        executable="control_physics_qualification",
         output="screen",
+        condition=IfCondition(
+            PythonExpression(["'", qualification_mode, "' != 'off'"])
+        ),
         parameters=[
-            {"use_sim_time": True},
+            {
+                "mode": qualification_mode,
+                "config": qualification_config,
+                "output_dir": qualification_output,
+                "use_sim_time": True,
+            }
         ],
     )
     return LaunchDescription(
@@ -117,6 +129,12 @@ def generate_launch_description():
                     "Robot Xacro passed to robot_state_publisher and Gazebo; "
                     "defaults to the local eye-in-hand wrapper around Piper"
                 ),
+            ),
+            DeclareLaunchArgument("qualification_mode", default_value="off"),
+            DeclareLaunchArgument("qualification_config", default_value=""),
+            DeclareLaunchArgument(
+                "qualification_output",
+                default_value="/tmp/foam_grasp_control_qualification",
             ),
             DeclareLaunchArgument(
                 "gazebo_executable",
@@ -153,8 +171,11 @@ def generate_launch_description():
             RegisterEventHandler(
                 OnProcessExit(
                     target_action=gripper8_controller,
-                    on_exit=[arm_startup_hold],
+                    on_exit=[qualification_node],
                 )
+            ),
+            RegisterEventHandler(
+                OnProcessExit(target_action=qualification_node, on_exit=[Shutdown()])
             ),
         ]
     )

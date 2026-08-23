@@ -88,7 +88,7 @@ class SceneAssetTest(unittest.TestCase):
             "gripper8_controller",
         ):
             self.assertIn(controller, piper)
-        self.assertIn("arm_startup_hold", piper)
+        self.assertNotIn("arm_startup_hold", piper)
         self.assertIn("allow_trajectory_execution", moveit)
         self.assertIn('"allow_trajectory_execution": False', moveit)
         self.assertNotIn("joint_states_single", moveit)
@@ -199,12 +199,31 @@ class SceneAssetTest(unittest.TestCase):
         )
         pid = config["gazebo_ros2_control"]["ros__parameters"]["pid_gains"]["position_pid"]
         for name in ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6"):
-            self.assertGreater(pid[name]["kp"], 0.0)
-            self.assertGreater(pid[name]["kd"], 0.0)
+            self.assertNotIn(name, pid)
         self.assertEqual(pid["joint7"]["ki"], 0.0)
         self.assertEqual(pid["joint8"]["ki"], 0.0)
         self.assertGreater(pid["joint7"]["kp"], 0.0)
         self.assertGreater(pid["joint8"]["kp"], 0.0)
+
+    def test_control_qualification_config_is_target_free_and_three_stage_ready(self):
+        config = yaml.safe_load(
+            (PACKAGE_ROOT / "config" / "control_physics_qualification.yaml").read_text()
+        )
+        self.assertEqual(config["cycles"], 5)
+        self.assertEqual(
+            [item["name"] for item in config["arm"]["sequence"]],
+            ["home", "pregrasp_like", "safe_pose", "return"],
+        )
+        self.assertEqual(config["gripper"]["openings_mm"], [70.0, 40.0, 70.0])
+
+    def test_control_qualification_launch_does_not_spawn_a_target(self):
+        launch = (
+            PACKAGE_ROOT / "launch" / "control_physics_qualification.launch.py"
+        ).read_text()
+        self.assertIn("control_physics_qualification", launch)
+        self.assertIn("piper_sim.launch.py", launch)
+        self.assertNotIn("foam_cube", launch)
+        self.assertNotIn("sim_bringup.launch.py", launch)
 
     def test_sim_bringup_forwards_robot_xacro_to_piper_launch(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()

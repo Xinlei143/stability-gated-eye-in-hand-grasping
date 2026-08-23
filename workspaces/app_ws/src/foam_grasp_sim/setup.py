@@ -55,8 +55,8 @@ setup(
             "foam_grasp_sim.contact_qualification:main",
             "render_physics_description = "
             "foam_grasp_sim.physics_description:main",
-            "arm_startup_hold = "
-            "foam_grasp_sim.arm_startup_hold_node:main",
+            "control_physics_qualification = "
+            "foam_grasp_sim.control_physics_qualification_node:main",
             "run_sim_benchmark = foam_grasp_sim.experiment_runner:main",
         ],
     },
