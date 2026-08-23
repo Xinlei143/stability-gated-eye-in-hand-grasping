@@ -48,6 +48,7 @@ setup(
             "foam_grasp_sim.method_policy_node:main",
             "metrics_logger_node = "
             "foam_grasp_sim.metrics_logger_node:main",
+            "grasp_assist_node = foam_grasp_sim.grasp_assist_node:main",
             "run_sim_benchmark = foam_grasp_sim.experiment_runner:main",
         ],
     },

@@ -81,6 +81,63 @@ class MetricsAccumulator:
         speed = displacement / duration if duration > 0 else 0.0
         return displacement > 0.002 or speed > 0.003
 
+    def _physical_grasp_outcome(self):
+        """Check that the target actually follows the tool during the lift."""
+        closed_ns = self._event_time("GRIPPER_CLOSED")
+        lift_ns = self._event_time("LIFT_STARTED")
+        if closed_ns is None or lift_ns is None:
+            return False, None, 0.0
+
+        before_lift = [
+            row for row in self.states
+            if closed_ns <= int(row.get("sim_time_ns", 0)) <= lift_ns
+        ]
+        if not before_lift:
+            before_lift = [
+                row for row in self.states
+                if int(row.get("sim_time_ns", 0)) <= lift_ns
+            ]
+        if not before_lift:
+            return False, None, 0.0
+        baseline = _point(before_lift[-1], "target_ground_truth")
+        if baseline is None:
+            return False, None, 0.0
+
+        lift_states = [
+            row for row in self.states
+            if int(row.get("sim_time_ns", 0)) >= lift_ns
+        ]
+        lift_heights = []
+        good_windows = []
+        window_start = None
+        previous_good_ns = None
+        for row in lift_states:
+            stamp = int(row.get("sim_time_ns", 0))
+            target = _point(row, "target_ground_truth")
+            tcp = _point(row, "tcp")
+            if target is not None:
+                lift_heights.append(target[2] - baseline[2])
+            good = (
+                target is not None
+                and tcp is not None
+                and target[2] - baseline[2] >= 0.03
+                and _distance(target, tcp) <= 0.02
+            )
+            if good:
+                if window_start is None or previous_good_ns is None or stamp - previous_good_ns > 300_000_000:
+                    window_start = stamp
+                previous_good_ns = stamp
+                good_windows.append((window_start, stamp))
+            else:
+                window_start = None
+                previous_good_ns = None
+
+        max_lift = max(lift_heights, default=0.0)
+        hold_s = max(
+            (end - start) / 1e9 for start, end in good_windows
+        ) if good_windows else 0.0
+        return hold_s >= 0.5, max_lift, hold_s
+
     def finalize(self):
         first_observation_ns = self._event_time("TARGET_OBSERVED")
         ready_ns = self._event_time("READY")
@@ -126,6 +183,9 @@ class MetricsAccumulator:
         task_success = any(
             event.get("event") == "TASK_FINISHED" for event in self.events
         )
+        physical_success, lift_height_m, grasp_hold_s = self._physical_grasp_outcome()
+        if task_success:
+            task_success = physical_success
         terminal_events = [
             event for event in self.events
             if event.get("event") in {"TRIAL_FINISHED", "TRIAL_FAILED"}
@@ -156,6 +216,9 @@ class MetricsAccumulator:
             "gate_resets": int(reset_count),
             "planning_success": bool(planning_success),
             "task_success": bool(task_success),
+            "physical_grasp_success": bool(physical_success),
+            "lift_height_m": lift_height_m,
+            "grasp_hold_s": grasp_hold_s,
             "trial_status": trial_status,
             "trial_success": trial_status == "finished",
             "false_ready": bool(self._false_ready(ready_ns)),

@@ -23,7 +23,12 @@ class SceneAssetTest(unittest.TestCase):
             execution["gripper_trajectory_action"],
             "/gripper_controller/follow_joint_trajectory",
         )
+        self.assertEqual(
+            execution["gripper8_trajectory_action"],
+            "/gripper8_controller/follow_joint_trajectory",
+        )
         self.assertEqual(execution["gripper_joint_name"], "joint7")
+        self.assertEqual(execution["gripper8_joint_name"], "joint8")
         self.assertEqual(execution["gripper_command_scale"], 0.5)
         self.assertEqual(execution["gripper_feedback_scale"], 2.0)
         self.assertEqual(execution["final_joint_tolerance"], 0.05)
@@ -72,8 +77,9 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn("piper_sim.launch.py", bringup)
         self.assertNotIn("piper_gazebo.launch.py", bringup)
         self.assertIn("piper_description_gazebo.xacro", piper)
-        self.assertIn("piper_gazebo", piper)
-        self.assertIn("joint8_ctrl.py", piper)
+        self.assertIn("gazebo_ros2_control", piper)
+        self.assertNotIn("joint8_ctrl.py", piper)
+        self.assertIn("piper_eye_in_hand_gazebo.xacro", piper)
         self.assertIn("grasp_table.world", piper)
         for controller in (
             "joint_state_broadcaster",
@@ -122,7 +128,11 @@ class SceneAssetTest(unittest.TestCase):
             ("camera_depth_frame", "camera_depth_optical_frame"),
         )
 
-        sensor = root.find("gazebo/sensor")
+        sensor = next(
+            sensor
+            for sensor in root.findall("gazebo/sensor")
+            if sensor.attrib.get("type") == "depth"
+        )
         self.assertIsNotNone(sensor)
         self.assertEqual(sensor.attrib["type"], "depth")
         self.assertEqual(sensor.findtext("update_rate"), "15")
@@ -147,6 +157,16 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn(
             "eye_in_hand_rgbd/depth/camera_info:=depth/camera_info", remappings
         )
+        for finger in ("link7", "link8"):
+            surface = root.find(f"gazebo[@reference='{finger}']")
+            self.assertIsNotNone(surface)
+            self.assertEqual(surface.findtext("mu1"), "1.0")
+            self.assertEqual(surface.findtext("mu2"), "1.0")
+            self.assertEqual(surface.findtext("maxVel"), "0.01")
+            contact_sensor = surface.find("sensor")
+            self.assertIsNotNone(contact_sensor)
+            self.assertEqual(contact_sensor.attrib["type"], "contact")
+            self.assertIsNotNone(contact_sensor.find("plugin"))
 
     def test_piper_launch_accepts_a_robot_xacro_override(self):
         piper = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
@@ -157,6 +177,13 @@ class SceneAssetTest(unittest.TestCase):
     def test_sim_bringup_forwards_robot_xacro_to_piper_launch(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         self.assertIn('LaunchConfiguration("robot_xacro")', bringup)
+
+    def test_grasp_assist_is_opt_in_and_world_loads_attachment_plugin(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        world = (PACKAGE_ROOT / "worlds" / "grasp_table.world").read_text()
+        self.assertIn('"grasp_assist_mode"', bringup)
+        self.assertIn("grasp_assist_node", bringup)
+        self.assertIn("libgazebo_model_attachment_plugin_lib.so", world)
         self.assertIn('"robot_xacro": robot_xacro', bringup)
 
     def test_benchmark_condition_json_is_forced_to_string(self):
@@ -226,6 +253,13 @@ class SceneAssetTest(unittest.TestCase):
             self.assertIn(value, bringup)
         self.assertNotIn("start_executor", bringup)
         self.assertNotIn('executable="executor"', bringup)
+
+    def test_grasp_sequence_receives_trial_seed(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        self.assertIn(
+            'sequence_parameters["seed"] = _parameter("seed", int)',
+            bringup,
+        )
 
     def test_piper_ros2_control_uses_the_upstream_robot_state_publisher_name(self):
         launch = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()

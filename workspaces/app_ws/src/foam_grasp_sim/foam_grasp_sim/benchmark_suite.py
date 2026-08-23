@@ -44,7 +44,7 @@ _KNOWN_DEFAULTS = {
     "tracking_replan_threshold", "tracking_commit_tolerance", "tracking_max_updates",
     "metrics_rate", "record_benchmark", "run_grasp_pipeline", "use_rviz",
     "perception_source", "outlier_range_mm", "scenario", "target_timeout",
-    "timeout_s",
+    "timeout_s", "grasp_assist_mode", "grasp_assist_service",
 }
 _FLOAT_RANGES = {
     "latency_ms": (0.0, 60_000.0),
@@ -240,6 +240,7 @@ def _launch_args(resolved: Mapping[str, Any], run_id: str, results_root: str) ->
         "stability_duration", "position_spread_threshold", "minimum_stable_samples",
         "observation_timeout", "metrics_rate", "tracking_commit_timeout",
         "tracking_replan_threshold", "tracking_commit_tolerance", "tracking_max_updates",
+        "grasp_assist_mode", "grasp_assist_service",
     )
     args = ["ros2", "launch", "foam_grasp_sim", "sim_bringup.launch.py"]
     for name in names:
@@ -251,6 +252,11 @@ def _launch_args(resolved: Mapping[str, Any], run_id: str, results_root: str) ->
             continue
         else:
             value = resolved[name]
+        if name == "grasp_assist_service" and value in (None, ""):
+            # ros2 launch rejects the bare ``name:=`` form.  An empty service
+            # means that the launch file's default (assist disabled) should
+            # remain in effect, so omit the argument entirely.
+            continue
         if isinstance(value, bool):
             value = "true" if value else "false"
         args.append(f"{name}:={value}")

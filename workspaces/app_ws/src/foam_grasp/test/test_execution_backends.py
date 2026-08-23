@@ -4,7 +4,7 @@ import types
 import unittest
 
 from sensor_msgs.msg import JointState
-from trajectory_msgs.msg import JointTrajectory
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from foam_grasp.execution import create_backend
 from foam_grasp.execution.base_backend import ExecutionResult
@@ -68,6 +68,29 @@ class ExecutionBackendTest(unittest.TestCase):
         self.assertAlmostEqual(trajectory.points[0].positions[0], 0.25)
         self.assertEqual(trajectory.points[0].time_from_start.nanosec, 150000000)
 
+    def test_gripper_trajectories_command_both_fingers_symmetrically(self):
+        trajectories = Ros2ControlBackend._paired_gripper_trajectories(0.04, 0.5)
+
+        self.assertEqual(trajectories[0].joint_names, ["joint7"])
+        self.assertEqual(trajectories[1].joint_names, ["joint8"])
+        self.assertAlmostEqual(trajectories[0].points[0].positions[0], 0.02)
+        self.assertAlmostEqual(trajectories[1].points[0].positions[0], -0.02)
+
+    def test_cartesian_trajectory_is_retimed_from_requested_joint_rate(self):
+        trajectory = JointTrajectory()
+        trajectory.joint_names = ["joint1", "joint2"]
+        first = JointTrajectoryPoint()
+        first.positions = [0.0, 0.0]
+        second = JointTrajectoryPoint()
+        second.positions = [0.1, 0.04]
+        trajectory.points = [first, second]
+
+        retimed = Ros2ControlBackend._retime_trajectory(trajectory, 0.05)
+
+        self.assertEqual(retimed.points[0].time_from_start.sec, 0)
+        self.assertEqual(retimed.points[1].time_from_start.sec, 2)
+        self.assertEqual(retimed.points[1].time_from_start.nanosec, 0)
+
     def test_simulation_gripper_final_error_compares_in_feedback_units(self):
         backend = object.__new__(Ros2ControlBackend)
         backend.node = FakeNode()
@@ -85,17 +108,20 @@ class ExecutionBackendTest(unittest.TestCase):
         backend.gripper_joint_name = "joint7"
         backend.gripper_command_scale = 0.5
         backend.gripper_client = object()
+        backend.gripper8_client = object()
         backend._prepared = True
         calls = {}
 
-        def fake_execute(trajectory, client, label, **kwargs):
-            calls.update(kwargs)
+        def fake_execute_pair(trajectories, label):
+            calls["trajectory_count"] = len(trajectories)
             return ExecutionResult(1.0, 0.0, 0.0, gripper_position=0.07)
 
-        backend._execute = fake_execute
+        backend._execute_gripper_pair = fake_execute_pair
+        backend._gripper_feedback_position = 0.04
+        backend._gripper8_feedback_position = -0.04
         backend.node.spin_for = lambda seconds: None
         backend.command_gripper(0.04, types.SimpleNamespace())
-        self.assertFalse(calls["check_final_error"])
+        self.assertEqual(calls["trajectory_count"], 2)
 
     def test_simulation_backend_does_not_use_node_publisher_hack(self):
         backend = object.__new__(Ros2ControlBackend)

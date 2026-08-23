@@ -62,6 +62,47 @@
     <origin xyz="0 0 0" rpy="-1.57079632679 0 -1.57079632679"/>
   </joint>
 
+  <!-- Explicit ODE contact settings for both Piper finger collision meshes. -->
+  <gazebo reference="link7">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <maxVel>0.01</maxVel>
+    <minDepth>0.001</minDepth>
+    <sensor name="link7_contact_sensor" type="contact">
+      <update_rate>100</update_rate>
+      <contact>
+        <collision>link7_collision</collision>
+      </contact>
+      <plugin name="link7_contact_plugin" filename="libgazebo_ros_bumper.so">
+        <ros>
+          <namespace>/foam_grasp_sim</namespace>
+          <remapping>bumper_states:=link7_contacts</remapping>
+        </ros>
+        <frame_name>link7</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <gazebo reference="link8">
+    <mu1>1.0</mu1>
+    <mu2>1.0</mu2>
+    <maxVel>0.01</maxVel>
+    <minDepth>0.001</minDepth>
+    <sensor name="link8_contact_sensor" type="contact">
+      <update_rate>100</update_rate>
+      <contact>
+        <collision>link8_collision</collision>
+      </contact>
+      <plugin name="link8_contact_plugin" filename="libgazebo_ros_bumper.so">
+        <ros>
+          <namespace>/foam_grasp_sim</namespace>
+          <remapping>bumper_states:=link8_contacts</remapping>
+        </ros>
+        <frame_name>link8</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
   <gazebo reference="camera_link">
     <sensor name="eye_in_hand_rgbd" type="depth">
       <pose>0 0 0 0 0 0</pose>

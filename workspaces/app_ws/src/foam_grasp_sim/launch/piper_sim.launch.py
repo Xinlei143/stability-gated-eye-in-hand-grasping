@@ -1,8 +1,8 @@
 """Launch the pinned Piper Gazebo model in this package's chosen world.
 
-The robot description, ros2_control configuration and joint8 mirror remain
-upstream Piper assets.  This launch owns composition only, so benchmark physics
-and scene selection are controlled by foam_grasp_sim without forking a URDF.
+The arm and controllers remain upstream Piper assets.  The local wrapper adds
+the eye-in-hand sensor and simulation contact parameters without modifying the
+vendor checkout.
 """
 
 from pathlib import Path
@@ -27,11 +27,10 @@ def _controller_spawner(name):
 
 def generate_launch_description():
     simulation_share = get_package_share_directory("foam_grasp_sim")
-    description_share = get_package_share_directory("piper_description")
     world = LaunchConfiguration("world")
     gazebo_executable = LaunchConfiguration("gazebo_executable")
     default_robot_xacro = (
-        Path(description_share) / "urdf" / "piper_description_gazebo.xacro"
+        Path(simulation_share) / "urdf" / "piper_eye_in_hand_gazebo.xacro"
     )
     robot_xacro = LaunchConfiguration("robot_xacro")
 
@@ -81,14 +80,6 @@ def generate_launch_description():
     arm_controller = _controller_spawner("arm_controller")
     gripper_controller = _controller_spawner("gripper_controller")
     gripper8_controller = _controller_spawner("gripper8_controller")
-    joint8_mirror = Node(
-        package="piper_gazebo",
-        executable="joint8_ctrl.py",
-        name="foam_grasp_sim_joint8_mirror",
-        output="screen",
-        parameters=[{"use_sim_time": True}],
-    )
-
     return LaunchDescription(
         [
             DeclareLaunchArgument(
@@ -103,7 +94,7 @@ def generate_launch_description():
                 default_value=str(default_robot_xacro),
                 description=(
                     "Robot Xacro passed to robot_state_publisher and Gazebo; "
-                    "defaults to the pinned upstream Piper description"
+                    "defaults to the local eye-in-hand wrapper around Piper"
                 ),
             ),
             DeclareLaunchArgument(
@@ -136,12 +127,6 @@ def generate_launch_description():
                 OnProcessExit(
                     target_action=gripper_controller,
                     on_exit=[gripper8_controller],
-                )
-            ),
-            RegisterEventHandler(
-                OnProcessExit(
-                    target_action=gripper8_controller,
-                    on_exit=[joint8_mirror],
                 )
             ),
         ]

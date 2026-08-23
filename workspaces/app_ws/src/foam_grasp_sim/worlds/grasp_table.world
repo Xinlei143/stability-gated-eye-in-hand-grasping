@@ -12,6 +12,7 @@
       </ros>
       <update_rate>30.0</update_rate>
     </plugin>
+    <plugin name="model_attachment_plugin" filename="libgazebo_model_attachment_plugin_lib.so"/>
     <include>
       <uri>model://sun</uri>
     </include>

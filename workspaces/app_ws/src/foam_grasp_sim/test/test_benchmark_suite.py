@@ -63,6 +63,33 @@ class BenchmarkSuiteTest(unittest.TestCase):
             {"snapshot", "tracking", "gated"},
         )
 
+    def test_optional_grasp_assist_settings_are_forwarded_to_launch(self):
+        suite = _suite(
+            defaults={
+                **_suite()["defaults"],
+                "grasp_assist_mode": "contact_confirmed",
+                "grasp_assist_service": "/foam_grasp_sim/prepare_grasp_assist",
+            }
+        )
+        trial = expand_suite(suite)[0]
+        self.assertIn("grasp_assist_mode:=contact_confirmed", trial.launch_args)
+        self.assertIn(
+            "grasp_assist_service:=/foam_grasp_sim/prepare_grasp_assist",
+            trial.launch_args,
+        )
+
+    def test_empty_grasp_assist_service_is_not_emitted_as_malformed_launch_arg(self):
+        suite = _suite(
+            defaults={
+                **_suite()["defaults"],
+                "grasp_assist_mode": "off",
+                "grasp_assist_service": "",
+            }
+        )
+        trial = expand_suite(suite)[0]
+        self.assertIn("grasp_assist_mode:=off", trial.launch_args)
+        self.assertNotIn("grasp_assist_service:=", trial.launch_args)
+
     def test_ids_are_stable_and_config_hash_is_canonical(self):
         first = expand_suite(_suite())[0]
         reordered = _suite()
@@ -100,7 +127,7 @@ class BenchmarkSuiteTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[1] / "config" / "benchmark_suites"
         expected = {
             "smoke", "baseline_comparison", "latency_sweep", "noise_sweep",
-            "dropout_sweep", "gate_ablation",
+            "dropout_sweep", "gate_ablation", "core_baseline_formal",
         }
         self.assertEqual({path.stem for path in root.glob("*.yaml")}, expected)
         for name in sorted(expected):
@@ -113,6 +140,12 @@ class BenchmarkSuiteTest(unittest.TestCase):
                 self.assertEqual(trials[0].resolved["perception_source"], "ground_truth")
             if name == "baseline_comparison":
                 self.assertEqual({trial.method for trial in trials}, {"snapshot", "tracking", "gated"})
+            if name == "core_baseline_formal":
+                self.assertEqual(len(trials), 120)
+                self.assertTrue(all(trial.timeout_s == 90.0 for trial in trials))
+                self.assertTrue(
+                    all(trial.resolved["grasp_assist_mode"] == "off" for trial in trials)
+                )
 
     def test_standard_suites_have_unique_deterministic_run_ids(self):
         root = Path(__file__).resolve().parents[1] / "config" / "benchmark_suites"

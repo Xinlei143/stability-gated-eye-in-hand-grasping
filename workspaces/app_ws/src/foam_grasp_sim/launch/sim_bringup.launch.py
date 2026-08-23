@@ -100,6 +100,7 @@ def generate_launch_description():
     method = LaunchConfiguration("method")
     robot_xacro = LaunchConfiguration("robot_xacro")
     gazebo_executable = LaunchConfiguration("gazebo_executable")
+    grasp_assist_mode = LaunchConfiguration("grasp_assist_mode")
 
     piper_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -236,6 +237,7 @@ def generate_launch_description():
     )
 
     sequence_parameters = dict(execution)
+    sequence_parameters["seed"] = _parameter("seed", int)
     sequence_parameters.update(
         {
             "table_size": table["size"],
@@ -251,6 +253,7 @@ def generate_launch_description():
             "tracking_commit_tolerance": _parameter("tracking_commit_tolerance", float),
             "tracking_max_updates": _parameter("tracking_max_updates", int),
             "observation_timeout": _parameter("observation_timeout", float),
+            "grasp_assist_service": LaunchConfiguration("grasp_assist_service"),
         }
     )
     sequence_arguments = [
@@ -304,6 +307,22 @@ def generate_launch_description():
                     "' == 'true'",
                 ]
             )
+        ),
+    )
+
+    grasp_assist = Node(
+        package="foam_grasp_sim",
+        executable="grasp_assist_node",
+        name="foam_grasp_assist",
+        output="screen",
+        parameters=[
+            {
+                "target_entity": PythonExpression(["'foam_' + '", target_model, "'"]),
+                "seed": _parameter("seed", int),
+            }
+        ],
+        condition=IfCondition(
+            PythonExpression(["'", grasp_assist_mode, "' == 'contact_confirmed'"])
         ),
     )
 
@@ -370,11 +389,11 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "robot_xacro",
                 default_value=str(
-                    Path(description_share)
+                    Path(package_share)
                     / "urdf"
-                    / "piper_description_gazebo.xacro"
+                    / "piper_eye_in_hand_gazebo.xacro"
                 ),
-                description="Robot Xacro forwarded to piper_sim.launch.py",
+                description="Local eye-in-hand wrapper forwarded to piper_sim.launch.py",
             ),
             DeclareLaunchArgument(
                 "gazebo_executable",
@@ -395,6 +414,16 @@ def generate_launch_description():
                 "execute_motion",
                 default_value="false",
                 description="Execute the selected method after readiness",
+            ),
+            DeclareLaunchArgument(
+                "grasp_assist_mode",
+                default_value="off",
+                description="off or contact_confirmed",
+            ),
+            DeclareLaunchArgument(
+                "grasp_assist_service",
+                default_value="",
+                description="Optional service used to attach after dual-finger contact",
             ),
             DeclareLaunchArgument(
                 "method",
@@ -514,6 +543,7 @@ def generate_launch_description():
             grasp_pose_preview,
             scene,
             *pipeline_after_target_handlers,
+            grasp_assist,
             sequence,
         ]
     )

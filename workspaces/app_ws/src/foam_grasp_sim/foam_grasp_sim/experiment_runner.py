@@ -85,6 +85,26 @@ def artifacts_complete(run_dir: Path) -> bool:
     return run_dir.is_dir() and all((run_dir / name).is_file() for name in RUN_ARTIFACTS)
 
 
+def status_for_artifacts(run_dir: Path, status: Mapping[str, Any]) -> dict[str, Any]:
+    """Apply post-run physical checks without trusting a command-only success."""
+    result = dict(status)
+    if not result.get("task_success"):
+        return result
+    metrics_path = run_dir / "metrics.json"
+    try:
+        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return result
+    if metrics.get("physical_grasp_success") is False:
+        return {
+            "status": "failed",
+            "trial_success": False,
+            "task_success": False,
+            "error": "physical grasp verification failed",
+        }
+    return result
+
+
 def signal_process_group(pid: int, sig: signal.Signals) -> None:
     """Signal only the process group created by this runner."""
 
@@ -304,6 +324,7 @@ class CampaignRunner:
             row.update({"status": "timed_out", "error": "trial timeout"})
         elif terminal is not None:
             values = status_for_terminal(terminal)
+            values = status_for_artifacts(run_dir, values)
             row.update({key: str(value).lower() for key, value in values.items()})
         else:
             row.update({"status": "failed", "trial_success": "false", "task_success": "false", "error": "process exited without terminal event"})

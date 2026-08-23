@@ -126,6 +126,15 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         self.commit_method_client = self.create_client(
             Trigger, str(self.get_parameter("commit_method_service").value)
         )
+        self.declare_parameter("grasp_assist_service", "")
+        self.grasp_assist_service = str(
+            self.get_parameter("grasp_assist_service").value
+        ).strip()
+        self.grasp_assist_client = (
+            self.create_client(Trigger, self.grasp_assist_service)
+            if self.grasp_assist_service
+            else None
+        )
         self.method_name = str(self.get_parameter("method").value)
         if self.method_name not in ("snapshot", "tracking", "gated"):
             raise RuntimeError("method must be snapshot, tracking, or gated")
@@ -265,6 +274,28 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         self.lift_pose = None
         self.lift_received_at = 0.0
         self.spin_for(0.5)
+
+    def prepare_grasp_assist(self):
+        """Request the optional contact-confirmed attachment before lifting."""
+
+        if self.grasp_assist_client is None:
+            return False
+        if not self.grasp_assist_client.wait_for_service(timeout_sec=3.0):
+            raise RuntimeError(
+                f"抓取辅助服务不可用: {self.grasp_assist_service}"
+            )
+        response = self.call_service(
+            self.grasp_assist_client,
+            Trigger.Request(),
+            5.0,
+        )
+        if not response.success:
+            raise RuntimeError("接触确认辅助夹持失败: " + response.message)
+        self.emit_event(
+            "GRASP_ASSIST_PREPARED",
+            details={"message": response.message},
+        )
+        return True
 
     @staticmethod
     def pose_distance(first, second):
@@ -1521,6 +1552,7 @@ def main(argv=None):
                 f"未确认夹住{args.target_class}：夹持余量仅"
                 f"{grip_margin_mm:.1f}mm；拒绝抬升"
             )
+        node.prepare_grasp_assist()
         node.operator_gate(
             f"确认{args.target_class}已被夹住，允许垂直抬升。",
             "LIFT",
