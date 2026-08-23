@@ -1,0 +1,38 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="grasp_table_no_attachment">
+    <gravity>0 0 -9.81</gravity>
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_update_rate>1000</real_time_update_rate>
+    </physics>
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+      <ros><namespace>/gazebo</namespace></ros>
+      <update_rate>30.0</update_rate>
+    </plugin>
+    <include><uri>model://sun</uri></include>
+    <model name="grasp_table">
+      <static>true</static>
+      <pose>0.40 0.00 -0.024 0 0 0</pose>
+      <link name="table_link">
+        <inertial>
+          <mass>10.0</mass>
+          <inertia>
+            <ixx>0.410417</ixx><iyy>0.302083</iyy><izz>0.708333</izz>
+            <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+          </inertia>
+        </inertial>
+        <collision name="collision">
+          <geometry><box><size>0.60 0.70 0.05</size></box></geometry>
+        </collision>
+        <visual name="visual">
+          <geometry><box><size>0.60 0.70 0.05</size></box></geometry>
+          <material>
+            <ambient>0.35 0.35 0.38 1</ambient>
+            <diffuse>0.45 0.45 0.48 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>
