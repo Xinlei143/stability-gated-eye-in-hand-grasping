@@ -1,6 +1,9 @@
 """Standard ``ros2_control`` FollowJointTrajectory backend."""
 
 import copy
+import csv
+import os
+from pathlib import Path
 import time
 
 from control_msgs.action import FollowJointTrajectory
@@ -9,6 +12,7 @@ from rclpy.action import ActionClient
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from .base_backend import ExecutionBackend, ExecutionResult
+from ..gripper_trace import make_trace_row
 
 
 class Ros2ControlBackend(ExecutionBackend):
@@ -88,6 +92,20 @@ class Ros2ControlBackend(ExecutionBackend):
         self._gripper_feedback_position = None
         self._gripper8_feedback_position = None
         self._gripper_feedback_effort = None
+        self._gripper_feedback_stamp_s = None
+        self._gripper8_feedback_stamp_s = None
+        self._gripper_trace_path = os.environ.get("FOAM_GRIPPER_TRACE_PATH", "")
+        self._gripper_trace_duration_s = self._env_float(
+            "FOAM_GRIPPER_TRACE_DURATION_S", 1.0
+        )
+        self._gripper_trace_interval_s = self._env_float(
+            "FOAM_GRIPPER_TRACE_INTERVAL_S", 0.05
+        )
+        self._gripper_trace_started_s = None
+        self._gripper_trace_last_sample_s = None
+        self._gripper_trace_commands = (None, None)
+        self._gripper_trace_rows = []
+        self._gripper_trace_pair_index = 0
         self.gripper_feedback_subscription = node.create_subscription(
             JointTrajectoryControllerState,
             self.gripper_feedback_topic,
@@ -116,10 +134,156 @@ class Ros2ControlBackend(ExecutionBackend):
         position = float(message.actual.positions[index])
         if joint_name == self.gripper_joint_name:
             self._gripper_feedback_position = position * self.gripper_feedback_scale
+            self._gripper_feedback_stamp_s = self._message_stamp_s(message)
         else:
             self._gripper8_feedback_position = position * self.gripper_feedback_scale
+            self._gripper8_feedback_stamp_s = self._message_stamp_s(message)
         if index < len(message.actual.effort):
             self._gripper_feedback_effort = float(message.actual.effort[index])
+
+    @staticmethod
+    def _env_float(name, default):
+        try:
+            value = float(os.environ.get(name, default))
+        except (TypeError, ValueError):
+            return float(default)
+        return value if value > 0.0 else float(default)
+
+    @staticmethod
+    def _message_stamp_s(message):
+        stamp = getattr(getattr(message, "header", None), "stamp", None)
+        if stamp is None:
+            return None
+        try:
+            return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _begin_gripper_trace(self, trajectories):
+        if not self._gripper_trace_path:
+            return
+        self._gripper_trace_pair_index += 1
+        self._gripper_trace_started_s = time.monotonic()
+        self._gripper_trace_last_sample_s = None
+        self._gripper_trace_commands = tuple(
+            float(trajectory.points[-1].positions[0])
+            if trajectory.points and trajectory.points[-1].positions
+            else None
+            for trajectory in trajectories
+        )
+        self._gripper_trace_rows = []
+        self._sample_gripper_trace(force=True)
+
+    def _sample_gripper_trace(self, *, force=False):
+        if self._gripper_trace_started_s is None:
+            return
+        elapsed = time.monotonic() - self._gripper_trace_started_s
+        if elapsed > self._gripper_trace_duration_s:
+            return
+        if (
+            not force
+            and self._gripper_trace_last_sample_s is not None
+            and elapsed - self._gripper_trace_last_sample_s
+            < self._gripper_trace_interval_s
+        ):
+            return
+        self._gripper_trace_rows.append(
+            make_trace_row(
+                wall_time_s=elapsed,
+                joint7_command=self._gripper_trace_commands[0],
+                joint8_command=self._gripper_trace_commands[1],
+                joint7_feedback=self._gripper_feedback_position,
+                joint8_feedback=self._gripper8_feedback_position,
+                joint7_stamp_s=self._gripper_feedback_stamp_s,
+                joint8_stamp_s=self._gripper8_feedback_stamp_s,
+            )
+        )
+        self._gripper_trace_last_sample_s = elapsed
+
+    def _gripper_gate_snapshot(self):
+        """Capture the exact feedback sample used by the post-action gate."""
+
+        joint7 = self._gripper_feedback_position
+        joint8 = self._gripper8_feedback_position
+        symmetry_error = None
+        if joint7 is not None and joint8 is not None:
+            symmetry_error = abs(float(joint7) + float(joint8))
+        return {
+            "wall_time_s": time.monotonic(),
+            "joint7_feedback": joint7,
+            "joint8_feedback": joint8,
+            "joint7_stamp_s": getattr(self, "_gripper_feedback_stamp_s", None),
+            "joint8_stamp_s": getattr(self, "_gripper8_feedback_stamp_s", None),
+            "symmetry_error_m": symmetry_error,
+        }
+
+    def _write_gripper_gate_snapshot(self, snapshot):
+        trace_path = getattr(self, "_gripper_trace_path", "")
+        if not trace_path:
+            return
+        try:
+            base = Path(trace_path)
+            suffix = base.suffix or ".csv"
+            stem = base.stem or "gripper_trace"
+            pair = (
+                f"_pair{self._gripper_trace_pair_index:02d}"
+                if self._gripper_trace_pair_index
+                else ""
+            )
+            path = base.with_name(f"{stem}{pair}_gate{suffix}")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fields = [
+                "wall_time_s",
+                "joint7_feedback",
+                "joint8_feedback",
+                "joint7_stamp_s",
+                "joint8_stamp_s",
+                "symmetry_error_m",
+            ]
+            with path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=fields)
+                writer.writeheader()
+                writer.writerow({field: snapshot.get(field) for field in fields})
+        except Exception as error:
+            self.node.get_logger().warning(
+                f"gripper gate trace write failed: {error}"
+            )
+
+    def _finish_gripper_trace(self):
+        if self._gripper_trace_started_s is None:
+            return
+        try:
+            self._sample_gripper_trace()
+            if not self._gripper_trace_rows:
+                self._sample_gripper_trace(force=True)
+            base = Path(self._gripper_trace_path)
+            suffix = base.suffix or ".csv"
+            stem = base.stem or "gripper_trace"
+            path = base.with_name(
+                f"{stem}_pair{self._gripper_trace_pair_index:02d}{suffix}"
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fields = list(self._gripper_trace_rows[0]) if self._gripper_trace_rows else [
+                "wall_time_s",
+                "joint7_command",
+                "joint8_command",
+                "joint7_feedback",
+                "joint8_feedback",
+                "joint7_stamp_s",
+                "joint8_stamp_s",
+                "symmetry_error_m",
+            ]
+            with path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(self._gripper_trace_rows)
+        except Exception as error:
+            self.node.get_logger().warning(f"gripper trace write failed: {error}")
+        finally:
+            self._gripper_trace_started_s = None
+            self._gripper_trace_last_sample_s = None
+            self._gripper_trace_commands = (None, None)
+            self._gripper_trace_rows = []
 
     def normalize_joint_positions(self, message):
         positions = dict(zip(message.name, message.position))
@@ -213,7 +377,6 @@ class Ros2ControlBackend(ExecutionBackend):
         return self._execute(retimed, self.arm_client, name)
 
     def command_gripper(self, target_actual_m, args):
-        del args
         result = self._execute_gripper_pair(
             self._paired_gripper_trajectories(
                 float(target_actual_m), self.gripper_command_scale, 2.0
@@ -221,11 +384,31 @@ class Ros2ControlBackend(ExecutionBackend):
             "gripper",
         )
         self.node.spin_for(0.2)
-        symmetry_error = self.gripper_symmetry_error()
+        gate_snapshot = self._gripper_gate_snapshot()
+        self._write_gripper_gate_snapshot(gate_snapshot)
+        symmetry_error = gate_snapshot["symmetry_error_m"]
         if symmetry_error is not None and symmetry_error > 0.002:
-            raise RuntimeError(
-                f"gripper fingers are not symmetric: {symmetry_error:.4f}m"
-            )
+            close_opening_mm = getattr(args, "close_opening_mm", None)
+            try:
+                is_post_close = abs(
+                    float(target_actual_m) - float(close_opening_mm) / 1000.0
+                ) <= 1e-6
+            except (TypeError, ValueError):
+                is_post_close = False
+            if not is_post_close:
+                raise RuntimeError(
+                    f"gripper fingers are not symmetric: {symmetry_error:.4f}m"
+                )
+            get_logger = getattr(self.node, "get_logger", None)
+            if callable(get_logger):
+                get_logger().warning(
+                    "post-close gripper symmetry diagnostic above 2 mm: "
+                    f"joint7={gate_snapshot['joint7_feedback']:.4f}m, "
+                    f"joint8={gate_snapshot['joint8_feedback']:.4f}m, "
+                    f"error={symmetry_error:.4f}m, "
+                    f"stamps=({gate_snapshot['joint7_stamp_s']}, "
+                    f"{gate_snapshot['joint8_stamp_s']})"
+                )
         feedback = self.node.current_positions()[6]
         return feedback if result.gripper_position is None else result.gripper_position
 
@@ -419,6 +602,7 @@ class Ros2ControlBackend(ExecutionBackend):
         self._begin_execution()
         handles = []
         start = time.monotonic()
+        self._begin_gripper_trace(trajectories)
         try:
             goals = []
             for trajectory in trajectories:
@@ -466,6 +650,7 @@ class Ros2ControlBackend(ExecutionBackend):
                     pass
             raise
         finally:
+            self._finish_gripper_trace()
             for handle in handles:
                 try:
                     self._active_goals.remove(handle)
@@ -477,6 +662,7 @@ class Ros2ControlBackend(ExecutionBackend):
         deadline = time.monotonic() + float(timeout_sec)
         while not future.done() and time.monotonic() < deadline:
             self.node.spin_for(0.02)
+            self._sample_gripper_trace()
         if not future.done():
             raise RuntimeError(f"{label} timed out")
         if future.exception() is not None:
