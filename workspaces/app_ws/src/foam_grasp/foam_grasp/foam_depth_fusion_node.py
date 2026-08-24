@@ -2,6 +2,7 @@
 """Fuse semantic masks with registered depth to publish 3D foam-object points."""
 
 from collections import deque
+import json
 import time
 
 import cv2
@@ -14,7 +15,12 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from cv_bridge import CvBridge
 from geometry_msgs.msg import PointStamped
 from sensor_msgs.msg import CameraInfo, Image
+from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
+
+from foam_grasp.depth_fusion_diagnostics import (
+    build_diagnostic,
+)
 
 
 CLASS_NAMES = {
@@ -33,6 +39,7 @@ MASK_TOPIC = "/foam_segmentation/mask"
 DEPTH_TOPIC = "/camera/depth/image_raw"
 CAMERA_INFO_TOPIC = "/camera/depth/camera_info"
 MARKER_TOPIC = "/foam_grasp/markers"
+DIAGNOSTIC_TOPIC = "/foam_grasp/depth_fusion_diagnostics"
 
 MAX_TIME_DIFFERENCE_SECONDS = 0.15
 MIN_COMPONENT_AREA_PIXELS = 150
@@ -55,6 +62,9 @@ class FoamDepthFusionNode(Node):
         self.latest_mask_stamp = None
         self.camera_intrinsics = None
         self.last_log_time = time.monotonic()
+        self.diagnostic_start_time = time.monotonic()
+        self.depth_frame_count = 0
+        self.valid_output_count = 0
 
         self.histories = {
             class_id: deque(maxlen=SMOOTHING_WINDOW)
@@ -78,6 +88,11 @@ class FoamDepthFusionNode(Node):
         self.marker_publisher = self.create_publisher(
             MarkerArray,
             MARKER_TOPIC,
+            10,
+        )
+        self.diagnostic_publisher = self.create_publisher(
+            String,
+            DIAGNOSTIC_TOPIC,
             10,
         )
 
@@ -106,6 +121,9 @@ class FoamDepthFusionNode(Node):
         self.get_logger().info(
             "Outputs: /foam_grasp/cube_point, "
             "/foam_grasp/cylinder_point, /foam_grasp/sphere_point"
+        )
+        self.get_logger().info(
+            f"Publishing per-frame diagnostics: {DIAGNOSTIC_TOPIC}"
         )
 
     def camera_info_callback(self, message):
@@ -172,9 +190,22 @@ class FoamDepthFusionNode(Node):
         raise RuntimeError(f"Unsupported depth dtype: {depth_image.dtype}")
 
     def calculate_point(self, class_mask, depth_meters):
+        stats = {
+            "status": "no_mask",
+            "mask_pixels": int(np.count_nonzero(class_mask)),
+            "component_pixels": 0,
+            "eroded_pixels": 0,
+            "valid_depth_pixels": 0,
+            "valid_depth_pixels_after_mad": 0,
+            "point_camera": None,
+        }
         component = self.largest_component(class_mask)
         if component is None:
-            return None, 0
+            if stats["mask_pixels"]:
+                stats["status"] = "component_too_small"
+            return None, stats
+
+        stats["component_pixels"] = int(component.sum())
 
         kernel = np.ones((5, 5), dtype=np.uint8)
         eroded = cv2.erode(
@@ -182,9 +213,12 @@ class FoamDepthFusionNode(Node):
             kernel,
             iterations=1,
         ).astype(bool)
+        stats["eroded_pixels"] = int(eroded.sum())
 
-        if int(eroded.sum()) >= MIN_VALID_DEPTH_PIXELS:
-            component = eroded
+        if stats["eroded_pixels"] < MIN_VALID_DEPTH_PIXELS:
+            stats["status"] = "insufficient_eroded_pixels"
+            return None, stats
+        component = eroded
 
         valid = (
             component
@@ -193,8 +227,10 @@ class FoamDepthFusionNode(Node):
             & (depth_meters <= MAX_DEPTH_METERS)
         )
 
-        if int(valid.sum()) < MIN_VALID_DEPTH_PIXELS:
-            return None, int(valid.sum())
+        stats["valid_depth_pixels"] = int(valid.sum())
+        if stats["valid_depth_pixels"] < MIN_VALID_DEPTH_PIXELS:
+            stats["status"] = "insufficient_valid_depth"
+            return None, stats
 
         initial_depths = depth_meters[valid]
         median_depth = float(np.median(initial_depths))
@@ -204,8 +240,10 @@ class FoamDepthFusionNode(Node):
 
         valid &= np.abs(depth_meters - median_depth) <= depth_band
 
-        if int(valid.sum()) < MIN_VALID_DEPTH_PIXELS:
-            return None, int(valid.sum())
+        stats["valid_depth_pixels_after_mad"] = int(valid.sum())
+        if stats["valid_depth_pixels_after_mad"] < MIN_VALID_DEPTH_PIXELS:
+            stats["status"] = "depth_outlier_rejection"
+            return None, stats
 
         rows, columns = np.nonzero(valid)
         z = depth_meters[rows, columns]
@@ -222,7 +260,24 @@ class FoamDepthFusionNode(Node):
             ],
             dtype=np.float64,
         )
-        return point, int(valid.sum())
+        stats["status"] = "valid"
+        stats["point_camera"] = [float(value) for value in point]
+        return point, stats
+
+    def publish_diagnostic(self, depth_stamp, frame_id, mask_stamp, classes):
+        elapsed = max(time.monotonic() - self.diagnostic_start_time, 1e-9)
+        payload = build_diagnostic(
+            depth_stamp=depth_stamp,
+            mask_stamp=mask_stamp,
+            frame_id=frame_id,
+            frame_count=self.depth_frame_count,
+            valid_output_count=self.valid_output_count,
+            output_rate_hz=self.depth_frame_count / elapsed,
+            classes=classes,
+        )
+        message = String()
+        message.data = json.dumps(payload, separators=(",", ":"))
+        self.diagnostic_publisher.publish(message)
 
     def smooth_point(self, class_id, point):
         history = self.histories[class_id]
@@ -259,14 +314,46 @@ class FoamDepthFusionNode(Node):
         return marker
 
     def depth_callback(self, message):
+        self.depth_frame_count += 1
+        depth_stamp = stamp_to_seconds(message.header.stamp)
         if self.latest_mask is None or self.latest_mask_stamp is None:
+            self.publish_diagnostic(
+                depth_stamp,
+                message.header.frame_id,
+                None,
+                {
+                    name: {
+                        "status": "no_mask",
+                        "mask_pixels": 0,
+                        "component_pixels": 0,
+                        "eroded_pixels": 0,
+                        "valid_depth_pixels": 0,
+                        "valid_depth_pixels_after_mad": 0,
+                        "point_camera": None,
+                    }
+                    for name in CLASS_NAMES.values()
+                },
+            )
             return
+        mask_stamp = self.latest_mask_stamp
+        mask = self.latest_mask
         if self.camera_intrinsics is None:
+            self.publish_diagnostic(
+                depth_stamp,
+                message.header.frame_id,
+                mask_stamp,
+                {name: {"status": "no_intrinsics"} for name in CLASS_NAMES.values()},
+            )
             return
 
-        depth_stamp = stamp_to_seconds(message.header.stamp)
-        time_difference = abs(depth_stamp - self.latest_mask_stamp)
+        time_difference = abs(depth_stamp - mask_stamp)
         if time_difference > MAX_TIME_DIFFERENCE_SECONDS:
+            self.publish_diagnostic(
+                depth_stamp,
+                message.header.frame_id,
+                mask_stamp,
+                {name: {"status": "stale_mask"} for name in CLASS_NAMES.values()},
+            )
             return
 
         try:
@@ -277,9 +364,17 @@ class FoamDepthFusionNode(Node):
             depth_meters = self.depth_to_meters(np.asarray(depth_image))
         except Exception as error:
             self.get_logger().error(f"Depth conversion failed: {error}")
+            self.publish_diagnostic(
+                depth_stamp,
+                message.header.frame_id,
+                mask_stamp,
+                {
+                    name: {"status": "depth_conversion_error"}
+                    for name in CLASS_NAMES.values()
+                },
+            )
             return
 
-        mask = self.latest_mask
         if mask.shape != depth_meters.shape:
             mask = cv2.resize(
                 mask,
@@ -288,15 +383,15 @@ class FoamDepthFusionNode(Node):
             )
 
         detected_points = {}
-        valid_pixel_counts = {}
+        class_stats = {}
         marker_array = MarkerArray()
 
         for class_id in CLASS_NAMES:
-            point, valid_count = self.calculate_point(
+            point, stats = self.calculate_point(
                 mask == class_id,
                 depth_meters,
             )
-            valid_pixel_counts[class_id] = valid_count
+            class_stats[CLASS_NAMES[class_id]] = stats
 
             if point is None:
                 self.histories[class_id].clear()
@@ -307,6 +402,7 @@ class FoamDepthFusionNode(Node):
 
             smoothed = self.smooth_point(class_id, point)
             detected_points[class_id] = smoothed
+            stats["point_camera_smoothed"] = [float(value) for value in smoothed]
 
             point_message = PointStamped()
             point_message.header = message.header
@@ -320,6 +416,13 @@ class FoamDepthFusionNode(Node):
             )
 
         self.marker_publisher.publish(marker_array)
+        self.valid_output_count += len(detected_points)
+        self.publish_diagnostic(
+            depth_stamp,
+            message.header.frame_id,
+            mask_stamp,
+            class_stats,
+        )
 
         now = time.monotonic()
         if now - self.last_log_time >= 1.0:
@@ -329,7 +432,7 @@ class FoamDepthFusionNode(Node):
                     descriptions.append(
                         f"{CLASS_NAMES[class_id]}="
                         f"({point[0]:.3f}, {point[1]:.3f}, {point[2]:.3f})m "
-                        f"[{valid_pixel_counts[class_id]}px]"
+                        f"[{class_stats[CLASS_NAMES[class_id]]['valid_depth_pixels_after_mad']}px]"
                     )
                 self.get_logger().info("; ".join(descriptions))
             else:

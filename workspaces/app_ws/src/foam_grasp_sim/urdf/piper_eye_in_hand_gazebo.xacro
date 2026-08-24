@@ -35,7 +35,11 @@
   <joint name="camera_mount_joint" type="fixed">
     <parent link="link6"/>
     <child link="camera_link"/>
-    <origin xyz="0 0 0.055" rpy="0 -1.57079632679 0"/>
+    <!-- Derived from runtime/calibration/handeye_eye_in_hand.json:
+         T_link6_camera_link = T_link6_camera_optical
+           * inv(T_camera_link_camera_color_optical_frame). -->
+    <origin xyz="-0.0774037255 0.0095206804 0.0301674851"
+            rpy="0.002600958 -1.211791754 -0.037610506"/>
   </joint>
 
   <joint name="camera_color_frame_joint" type="fixed">
@@ -106,13 +110,15 @@
   <gazebo reference="camera_link">
     <sensor name="eye_in_hand_rgbd" type="depth">
       <pose>0 0 0 0 0 0</pose>
-      <update_rate>15</update_rate>
+      <!-- DaBai DC1 project-validated profile: 640x480 at 30 Hz. -->
+      <update_rate>30</update_rate>
       <visualize>false</visualize>
       <camera name="eye_in_hand_rgbd">
-        <horizontal_fov>1.0472</horizontal_fov>
+        <!-- Derived from the project-validated DC1 depth fx ~= 489.48 px. -->
+        <horizontal_fov>1.158020831</horizontal_fov>
         <image>
           <width>640</width>
-          <height>360</height>
+          <height>480</height>
           <format>R8G8B8</format>
         </image>
         <depth_camera/>

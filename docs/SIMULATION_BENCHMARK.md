@@ -44,8 +44,11 @@ results/<run_id>/
 `seed`, `scenario`, `method`, target class, frame names and the 0.1358 m local
 `+Z` tool offset are recorded in `metadata.json`.  `states.csv` contains the
 ground-truth, observed, selected and committed target positions, TCP position,
-six arm joints, gripper, method state, readiness and observation ages.  TCP is
-computed from `base_link -> link6` TF plus the configured local `+Z` offset.
+six arm joints, gripper, method state, readiness and observation ages.  RGB-D
+runs additionally record the fresh-observation flag and the latest depth-fusion
+diagnostic (mask/component/valid-depth counts, synchronization delta, camera
+frame point and output rate). TCP is computed from `base_link -> link6` TF plus
+the configured local `+Z` offset.
 
 `events.csv` stores edge-triggered JSON events from the common
 `/foam_grasp/benchmark_event` topic.  Every event has:
@@ -182,18 +185,77 @@ ros2 launch foam_grasp_sim full_pipeline.launch.py \
 
 The eye-in-hand Xacro is selected by `robot_xacro` and adds a fixed
 `camera_link` near the link6 tool axis plus color/depth optical frames and a
-640x360, 15 Hz Gazebo depth sensor. The plugin publishes
+640x480, 30 Hz Gazebo depth sensor matched to the project-validated DaBai DC1
+profile. The plugin publishes
 `/camera/color/image_raw`, `/camera/depth/image_raw`, and
 `/camera/depth/camera_info`. `foam_camera_to_base_node` uses
 `transform_source:=tf` in this launch and looks up the stamped source frame in
 the robot TF tree. The real `system.launch.py` remains calibration mode.
 
-The simulation camera transform is an explicit integration fixture, not a
-physical hand-eye calibration. Before claiming end-to-end success, verify RGB,
+The fixed `link6 -> camera_color_optical_frame` transform is derived from the
+repository's eye-in-hand hand-eye asset; the color/depth optical frames remain
+coincident with that calibrated optical center. Before claiming end-to-end success, verify RGB,
 depth, CameraInfo, TF, mask, camera-frame points, base-frame points, method
 `READY`, `PLAN_SUCCEEDED`, and the terminal event in that order. A plan-only
 trial ends with `TRIAL_FINISHED` and `task_success=false`; only an executed
 grasp may emit `TASK_FINISHED`.
+
+The depth-fusion diagnostic topic is `/foam_grasp/depth_fusion_diagnostics`.
+It emits one JSON record per depth frame with explicit failure reasons such as
+`component_too_small`, `insufficient_eroded_pixels`, `insufficient_valid_depth`,
+`depth_outlier_rejection`, and `stale_mask`. The RGB-D qualification uses a
+freshness threshold of 0.20 s for `observation_fresh`; this is separate from
+the 0.15 s mask/depth synchronization limit.
+
+The runtime synchronization contract intentionally matches the real DaBai
+pipeline: each depth callback uses the latest received mask and the current
+depth frame. It does not use a depth buffer, `message_filters`, or approximate
+time synchronization. Each diagnostic record contains:
+
+- `depth_stamp`: current depth header timestamp;
+- `mask_stamp`: the source RGB timestamp preserved on the segmentation mask;
+- `mask_age_s = depth_stamp - mask_stamp` (signed);
+- `mask_depth_delta_s = abs(mask_age_s)` (the value used by the 0.15 s gate).
+
+For a 30--60 second synchronization check, source the project environment and
+capture the diagnostic topic in a separate terminal while the RGB-D launch is
+running:
+
+```bash
+export ROS_LOG_DIR=/tmp/foam-depth-fusion-sync-roslog
+mkdir -p "$ROS_LOG_DIR"
+source scripts/source_env.sh
+timeout 60s ros2 topic echo --no-daemon --full-length \
+  /foam_grasp/depth_fusion_diagnostics \
+  > /tmp/foam-depth-fusion-sync.yaml
+PYTHONPATH=. python3 analysis/depth_fusion_sync_quality.py \
+  /tmp/foam-depth-fusion-sync.yaml --target-class cube
+```
+
+During the same run, inspect the delivered rates in separate terminals:
+
+```bash
+ros2 topic hz /camera/color/image_raw
+ros2 topic hz /camera/depth/image_raw
+ros2 topic hz /foam_segmentation/mask
+```
+
+The synchronization check passes only when the absolute-age p95 is below
+150 ms and no paired record exceeds 150 ms. If it fails, first compare the
+RGB, depth, and mask rates with the segmentation node's reported FPS and
+latency. Do not relax the threshold or add runtime buffering as a first step.
+
+For raw localization qualification, compare the observed base-frame point
+directly with ground truth:
+
+```bash
+PYTHONPATH=. python3 analysis/semantic_perception_quality.py \
+  results/<run_id>/states.csv
+```
+
+This reports valid fresh-observation fraction, per-axis absolute errors,
+planar error, and 3D error. It deliberately does not use method-selected or
+latched target metrics as perception accuracy.
 
 ## Offline Stage 7 analysis
 

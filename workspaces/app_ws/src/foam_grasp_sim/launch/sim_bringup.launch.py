@@ -104,9 +104,11 @@ def generate_launch_description():
         package_share
     )
     use_rviz = LaunchConfiguration("use_rviz")
+    start_moveit = LaunchConfiguration("start_moveit")
     target_model = LaunchConfiguration("target_model")
     run_grasp_pipeline = LaunchConfiguration("run_grasp_pipeline")
     execute_motion = LaunchConfiguration("execute_motion")
+    prepare_observation_pose = LaunchConfiguration("prepare_observation_pose")
     trajectory = LaunchConfiguration("trajectory")
     perception_source = LaunchConfiguration("perception_source")
     method = LaunchConfiguration("method")
@@ -157,6 +159,7 @@ def generate_launch_description():
             "use_rviz": use_rviz,
             "start_robot_state_publisher": "false",
         }.items(),
+        condition=IfCondition(start_moveit),
     )
 
     target_spawns = [
@@ -255,6 +258,7 @@ def generate_launch_description():
                 "seed": _parameter("seed", int),
             }
         ],
+        condition=IfCondition(run_grasp_pipeline),
     )
 
     pose_parameters = {
@@ -395,6 +399,22 @@ def generate_launch_description():
         arguments=["--timeout-s", simulation_readiness_timeout_s],
     )
 
+    move_to_observe = Node(
+        package="foam_grasp",
+        executable="move_to_observe",
+        name="foam_move_to_observe_sim",
+        output="screen",
+        arguments=[
+            "--execution-backend",
+            "simulation",
+            "--execute",
+            "--confirm",
+            "AUTO_MOVE_TO_OBSERVE",
+            "--countdown-seconds",
+            "0",
+        ],
+    )
+
     benchmark_logger = Node(
         package="foam_grasp_sim",
         executable="metrics_logger_node",
@@ -449,18 +469,7 @@ def generate_launch_description():
             ]
         return [*target_spawns]
 
-    def _after_target_spawn(event, context):
-        del context
-        returncode = event.returncode
-        if returncode not in (None, 0):
-            return [
-                Shutdown(
-                    reason=(
-                        "target spawn failed; refusing to start the grasp pipeline "
-                        f"(returncode={returncode})"
-                    )
-                )
-            ]
+    def _pipeline_actions():
         return [
             *motion_nodes,
             simulated_perception,
@@ -473,6 +482,34 @@ def generate_launch_description():
             execute_sequence,
         ]
 
+    def _after_target_spawn(event, context):
+        returncode = event.returncode
+        if returncode not in (None, 0):
+            return [
+                Shutdown(
+                    reason=(
+                        "target spawn failed; refusing to start the grasp pipeline "
+                        f"(returncode={returncode})"
+                    )
+                )
+            ]
+        if context.perform_substitution(prepare_observation_pose).lower() == "true":
+            return [move_to_observe]
+        return _pipeline_actions()
+
+    def _after_observation_pose(event, context):
+        del context
+        if event.returncode != 0:
+            return [
+                Shutdown(
+                    reason=(
+                        "observation pose preparation failed; refusing to start "
+                        f"the grasp pipeline (returncode={event.returncode})"
+                    )
+                )
+            ]
+        return _pipeline_actions()
+
     pipeline_after_target_handlers = [
         RegisterEventHandler(
             OnProcessExit(
@@ -482,10 +519,17 @@ def generate_launch_description():
         )
         for target_spawn in target_spawns
     ]
+    observation_pose_handler = RegisterEventHandler(
+        OnProcessExit(
+            target_action=move_to_observe,
+            on_exit=_after_observation_pose,
+        )
+    )
 
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_rviz", default_value="true"),
+            DeclareLaunchArgument("start_moveit", default_value="true"),
             DeclareLaunchArgument(
                 "robot_xacro",
                 default_value=str(
@@ -514,6 +558,11 @@ def generate_launch_description():
                 "execute_motion",
                 default_value="false",
                 description="Execute the selected method after readiness",
+            ),
+            DeclareLaunchArgument(
+                "prepare_observation_pose",
+                default_value="false",
+                description="Move to the verified observation pose before the pipeline",
             ),
             DeclareLaunchArgument(
                 "grasp_assist_mode",
@@ -691,6 +740,7 @@ def generate_launch_description():
                     on_exit=_after_readiness,
                 )
             ),
+            observation_pose_handler,
             *pipeline_after_target_handlers,
         ]
     )
