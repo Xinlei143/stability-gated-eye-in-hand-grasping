@@ -8,6 +8,7 @@ class FullPipelineLaunchTest(unittest.TestCase):
         source = (root / "launch" / "full_pipeline.launch.py").read_text(encoding="utf-8")
         self.assertIn("sim_bringup.launch.py", source)
         self.assertIn('"perception_source": "rgbd"', source)
+        self.assertIn('"scenario": LaunchConfiguration("trajectory")', source)
         self.assertIn('executable="segmentation_node"', source)
         self.assertIn('executable="depth_fusion_node"', source)
         self.assertIn('executable="camera_to_base_node"', source)

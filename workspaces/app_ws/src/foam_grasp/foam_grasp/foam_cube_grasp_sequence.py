@@ -1652,7 +1652,9 @@ def main(argv=None):
         for remaining in range(args.countdown_seconds, 0, -1):
             print(f"{remaining} 秒后移动到PREGRASP；按Ctrl+C取消。", flush=True)
             node.spin_for(1.0)
-        refreshed = node.validate_live_state(
+        refreshed = _task_phase(
+            "safety",
+            node.validate_live_state,
             require_open_gripper=False,
             allow_not_at_target=True,
         )

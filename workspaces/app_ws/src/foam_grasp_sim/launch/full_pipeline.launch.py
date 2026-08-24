@@ -39,6 +39,7 @@ def generate_launch_description():
             "prepare_observation_pose": LaunchConfiguration("prepare_observation_pose"),
             "method": LaunchConfiguration("method"),
             "trajectory": LaunchConfiguration("trajectory"),
+            "scenario": LaunchConfiguration("trajectory"),
             "perception_source": "rgbd",
             "record_benchmark": LaunchConfiguration("record_benchmark"),
             "results_root": LaunchConfiguration("results_root"),

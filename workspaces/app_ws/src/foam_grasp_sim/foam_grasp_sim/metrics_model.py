@@ -138,6 +138,32 @@ class MetricsAccumulator:
         ) if good_windows else 0.0
         return hold_s >= 0.5, max_lift, hold_s
 
+    def _normalize_physical_failure_terminal(self, physical_success, execution_completed):
+        """Keep execute terminal events consistent with lift verification."""
+
+        if physical_success or not execution_completed:
+            return
+        terminal_events = [
+            event for event in self.events
+            if event.get("event") == "TRIAL_FINISHED"
+        ]
+        if not terminal_events:
+            return
+        terminal = max(
+            terminal_events,
+            key=lambda event: int(event.get("sim_time_ns", 0)),
+        )
+        details = dict(terminal.get("details") or {})
+        if str(details.get("execution_mode", "execute")) != "execute":
+            return
+        details.update({
+            "task_success": False,
+            "outcome": "task_failure",
+            "failure_stage": "verification",
+            "reason": "physical grasp verification failed",
+        })
+        terminal["details"] = details
+
     def finalize(self):
         first_observation_ns = self._event_time("TARGET_OBSERVED")
         ready_ns = self._event_time("READY")
@@ -186,6 +212,10 @@ class MetricsAccumulator:
         )
         physical_success, lift_height_m, grasp_hold_s = self._physical_grasp_outcome()
         task_success = execution_completed and physical_success
+        self._normalize_physical_failure_terminal(
+            physical_success,
+            execution_completed,
+        )
         terminal_events = [
             event for event in self.events
             if event.get("event") in {"TRIAL_FINISHED", "TRIAL_FAILED"}
