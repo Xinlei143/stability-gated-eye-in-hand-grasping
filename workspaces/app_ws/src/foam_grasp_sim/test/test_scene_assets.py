@@ -399,6 +399,23 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn('"gazebo_executable"', launch)
         self.assertIn('default_value="gzserver"', launch)
 
+    def test_controller_spawners_use_explicit_startup_service_timeouts(self):
+        launch = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
+        for option, value in (
+            ("--controller-manager-timeout", "60.0"),
+            ("--service-call-timeout", "30.0"),
+            ("--switch-timeout", "30.0"),
+        ):
+            self.assertIn(f'"{option}"', launch)
+            self.assertIn(f'"{value}"', launch)
+
+    def test_readiness_shutdown_guard_is_idempotent(self):
+        readiness = (
+            PACKAGE_ROOT / "foam_grasp_sim" / "simulation_readiness_node.py"
+        ).read_text()
+        self.assertIn("if rclpy.ok():", readiness)
+        self.assertIn("rclpy.shutdown()", readiness)
+
     def test_piper_robot_description_is_explicitly_a_string_parameter(self):
         launch = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
         self.assertIn("ParameterValue(robot_description, value_type=str)", launch)
