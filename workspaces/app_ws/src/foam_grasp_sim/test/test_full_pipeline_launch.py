@@ -12,6 +12,7 @@ class FullPipelineLaunchTest(unittest.TestCase):
         self.assertIn('executable="depth_fusion_node"', source)
         self.assertIn('executable="camera_to_base_node"', source)
         self.assertIn('"transform_source": "tf"', source)
+        self.assertIn('"use_sim_time": True', source)
         self.assertIn("piper_eye_in_hand_physics.xacro", source)
         self.assertIn('"prepare_observation_pose": LaunchConfiguration("prepare_observation_pose")', source)
         self.assertIn('DeclareLaunchArgument("prepare_observation_pose", default_value="true")', source)
@@ -39,6 +40,18 @@ class FullPipelineLaunchTest(unittest.TestCase):
         self.assertNotIn("target_motion_node", source)
         self.assertNotIn("gazebo_ros", source)
         self.assertNotIn("method_policy_node", source)
+
+    def test_rgbd_metrics_schema_records_depth_fusion_diagnostics(self):
+        source = (Path(__file__).parents[1] / "foam_grasp_sim" / "metrics_logger_node.py").read_text(encoding="utf-8")
+        for field in (
+            "observation_fresh",
+            "depth_fusion_status",
+            "depth_fusion_mask_pixels",
+            "depth_fusion_valid_depth_pixels",
+            "depth_fusion_mask_depth_delta_s",
+        ):
+            self.assertIn(field, source)
+        self.assertIn("/foam_grasp/depth_fusion_diagnostics", source)
 
 
 if __name__ == "__main__":

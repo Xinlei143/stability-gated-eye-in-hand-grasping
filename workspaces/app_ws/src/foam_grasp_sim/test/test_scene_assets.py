@@ -136,9 +136,14 @@ class SceneAssetTest(unittest.TestCase):
         )
         self.assertIsNotNone(sensor)
         self.assertEqual(sensor.attrib["type"], "depth")
-        self.assertEqual(sensor.findtext("update_rate"), "15")
+        self.assertEqual(sensor.findtext("update_rate"), "30")
         self.assertEqual(sensor.findtext("camera/image/width"), "640")
-        self.assertEqual(sensor.findtext("camera/image/height"), "360")
+        self.assertEqual(sensor.findtext("camera/image/height"), "480")
+        self.assertAlmostEqual(
+            float(sensor.findtext("camera/horizontal_fov")),
+            1.158020831,
+            places=9,
+        )
         self.assertIsNotNone(sensor.find("camera/depth_camera"))
         plugin = sensor.find("plugin")
         self.assertIsNotNone(plugin)
@@ -168,6 +173,26 @@ class SceneAssetTest(unittest.TestCase):
             self.assertIsNotNone(contact_sensor)
             self.assertEqual(contact_sensor.attrib["type"], "contact")
             self.assertIsNotNone(contact_sensor.find("plugin"))
+
+    def test_camera_mount_matches_handeye_optical_calibration(self):
+        path = PACKAGE_ROOT / "urdf" / "piper_eye_in_hand_gazebo.xacro"
+        root = ET.parse(path).getroot()
+        mount = next(
+            joint for joint in root.findall("joint")
+            if joint.attrib.get("name") == "camera_mount_joint"
+        )
+        origin = mount.find("origin")
+        self.assertIsNotNone(origin)
+        self.assertEqual(mount.find("parent").attrib["link"], "link6")
+        self.assertEqual(mount.find("child").attrib["link"], "camera_link")
+        self.assertEqual(
+            tuple(float(value) for value in origin.attrib["xyz"].split()),
+            (-0.0774037255, 0.0095206804, 0.0301674851),
+        )
+        self.assertEqual(
+            tuple(float(value) for value in origin.attrib["rpy"].split()),
+            (0.002600958, -1.211791754, -0.037610506),
+        )
 
     def test_piper_launch_accepts_a_robot_xacro_override(self):
         piper = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()

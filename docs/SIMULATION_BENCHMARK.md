@@ -44,8 +44,11 @@ results/<run_id>/
 `seed`, `scenario`, `method`, target class, frame names and the 0.1358 m local
 `+Z` tool offset are recorded in `metadata.json`.  `states.csv` contains the
 ground-truth, observed, selected and committed target positions, TCP position,
-six arm joints, gripper, method state, readiness and observation ages.  TCP is
-computed from `base_link -> link6` TF plus the configured local `+Z` offset.
+six arm joints, gripper, method state, readiness and observation ages.  RGB-D
+runs additionally record the fresh-observation flag and the latest depth-fusion
+diagnostic (mask/component/valid-depth counts, synchronization delta, camera
+frame point and output rate). TCP is computed from `base_link -> link6` TF plus
+the configured local `+Z` offset.
 
 `events.csv` stores edge-triggered JSON events from the common
 `/foam_grasp/benchmark_event` topic.  Every event has:
@@ -182,18 +185,39 @@ ros2 launch foam_grasp_sim full_pipeline.launch.py \
 
 The eye-in-hand Xacro is selected by `robot_xacro` and adds a fixed
 `camera_link` near the link6 tool axis plus color/depth optical frames and a
-640x360, 15 Hz Gazebo depth sensor. The plugin publishes
+640x480, 30 Hz Gazebo depth sensor matched to the project-validated DaBai DC1
+profile. The plugin publishes
 `/camera/color/image_raw`, `/camera/depth/image_raw`, and
 `/camera/depth/camera_info`. `foam_camera_to_base_node` uses
 `transform_source:=tf` in this launch and looks up the stamped source frame in
 the robot TF tree. The real `system.launch.py` remains calibration mode.
 
-The simulation camera transform is an explicit integration fixture, not a
-physical hand-eye calibration. Before claiming end-to-end success, verify RGB,
+The fixed `link6 -> camera_color_optical_frame` transform is derived from the
+repository's eye-in-hand hand-eye asset; the color/depth optical frames remain
+coincident with that calibrated optical center. Before claiming end-to-end success, verify RGB,
 depth, CameraInfo, TF, mask, camera-frame points, base-frame points, method
 `READY`, `PLAN_SUCCEEDED`, and the terminal event in that order. A plan-only
 trial ends with `TRIAL_FINISHED` and `task_success=false`; only an executed
 grasp may emit `TASK_FINISHED`.
+
+The depth-fusion diagnostic topic is `/foam_grasp/depth_fusion_diagnostics`.
+It emits one JSON record per depth frame with explicit failure reasons such as
+`component_too_small`, `insufficient_eroded_pixels`, `insufficient_valid_depth`,
+`depth_outlier_rejection`, and `stale_mask`. The RGB-D qualification uses a
+freshness threshold of 0.20 s for `observation_fresh`; this is separate from
+the 0.15 s mask/depth synchronization limit.
+
+For raw localization qualification, compare the observed base-frame point
+directly with ground truth:
+
+```bash
+PYTHONPATH=. python3 analysis/semantic_perception_quality.py \
+  results/<run_id>/states.csv
+```
+
+This reports valid fresh-observation fraction, per-axis absolute errors,
+planar error, and 3D error. It deliberately does not use method-selected or
+latched target metrics as perception accuracy.
 
 ## Offline Stage 7 analysis
 

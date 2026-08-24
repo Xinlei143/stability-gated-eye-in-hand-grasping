@@ -75,7 +75,7 @@ class CameraToBaseTransformTest(unittest.TestCase):
         self.assertEqual(args[1], "camera_color_optical_frame")
         self.assertEqual(args[2], Time.from_msg(message.header.stamp))
         self.assertIsInstance(kwargs["timeout"], Duration)
-        self.assertAlmostEqual(kwargs["timeout"].nanoseconds / 1e9, 0.2)
+        self.assertAlmostEqual(kwargs["timeout"].nanoseconds / 1e9, 0.0)
         do_transform.assert_called_once_with(message, buffer.transform)
         output = node.point_publishers[1].messages[0]
         self.assertEqual(output.header.frame_id, "base_link")
@@ -92,9 +92,64 @@ class CameraToBaseTransformTest(unittest.TestCase):
 
         node.point_callback(1, message)
 
-        self.assertEqual(len(buffer.calls), 1)
+        self.assertEqual(len(buffer.calls), 2)
         self.assertEqual(node.point_publishers[1].messages, [])
         self.assertEqual(node.marker_publisher.messages, [])
+
+    def test_tf_mode_uses_latest_transform_for_future_timestamp(self):
+        message = PointStamped()
+        message.header.frame_id = "camera_color_optical_frame"
+        message.header.stamp = RosTime(sec=4, nanosec=5)
+        transformed = PointStamped()
+        future_error = TransformException(
+            "Lookup would require extrapolation into the future"
+        )
+
+        class _FutureBuffer(_Buffer):
+            def lookup_transform(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+                if len(self.calls) == 1:
+                    raise future_error
+                return object()
+
+        buffer = _FutureBuffer()
+        node = _tf_node(buffer)
+
+        with patch.object(
+            camera_to_base,
+            "do_transform_point",
+            return_value=transformed,
+            create=True,
+        ):
+            node.point_callback(1, message)
+
+        self.assertEqual(len(buffer.calls), 2)
+        self.assertEqual(buffer.calls[1][0][2], Time())
+        self.assertAlmostEqual(buffer.calls[1][1]["timeout"].nanoseconds / 1e9, 0.02)
+
+    def test_tf_mode_marks_output_with_current_sim_time_after_transform(self):
+        message = PointStamped()
+        message.header.frame_id = "camera_color_optical_frame"
+        message.header.stamp = RosTime(sec=4, nanosec=5)
+        transformed = PointStamped()
+        buffer = _Buffer(transform=object())
+        node = _tf_node(buffer)
+        node.get_clock = lambda: types.SimpleNamespace(
+            now=lambda: types.SimpleNamespace(
+                to_msg=lambda: RosTime(sec=9, nanosec=10)
+            )
+        )
+
+        with patch.object(
+            camera_to_base,
+            "do_transform_point",
+            return_value=transformed,
+            create=True,
+        ):
+            node.point_callback(1, message)
+
+        self.assertEqual(node.point_publishers[1].messages[0].header.stamp.sec, 9)
+        self.assertEqual(node.point_publishers[1].messages[0].header.stamp.nanosec, 10)
 
 
 if __name__ == "__main__":

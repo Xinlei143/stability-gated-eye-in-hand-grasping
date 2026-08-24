@@ -31,7 +31,20 @@ STATE_FIELDS = (
     "joint1", "joint2", "joint3", "joint4", "joint5", "joint6",
     "gripper", "gripper8", "gripper_total_opening", "gripper_symmetry_error",
     "gate_ready", "method_state", "method", "scenario", "seed",
-    "observation_valid", "observation_age_s", "selected_age_s", "latched_age_s",
+    "observation_valid", "observation_fresh", "observation_age_s",
+    "selected_age_s", "latched_age_s",
+    "depth_fusion_status", "depth_fusion_mask_pixels",
+    "depth_fusion_component_pixels", "depth_fusion_eroded_pixels",
+    "depth_fusion_valid_depth_pixels",
+    "depth_fusion_valid_depth_pixels_after_mad",
+    "depth_fusion_mask_depth_delta_s", "depth_fusion_diag_age_s",
+    "depth_fusion_output_rate_hz", "depth_fusion_frame_count",
+    "depth_fusion_valid_output_count",
+    "depth_fusion_point_camera_x", "depth_fusion_point_camera_y",
+    "depth_fusion_point_camera_z",
+    "depth_fusion_point_camera_smoothed_x",
+    "depth_fusion_point_camera_smoothed_y",
+    "depth_fusion_point_camera_smoothed_z",
 )
 
 
@@ -111,6 +124,7 @@ class MetricsLoggerNode(Node):
         self.joints = {}
         self.gate_ready = False
         self.method_state = ""
+        self.latest_depth_diagnostic = None
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
@@ -139,6 +153,12 @@ class MetricsLoggerNode(Node):
         self.state_subscription = self.create_subscription(
             String, "/foam_grasp/method_state", self.state_callback, 20
         )
+        self.depth_diagnostic_subscription = self.create_subscription(
+            String,
+            "/foam_grasp/depth_fusion_diagnostics",
+            self.depth_diagnostic_callback,
+            30,
+        )
         self.joint_subscription = self.create_subscription(
             JointState, "/joint_states", self.joint_callback, 30
         )
@@ -158,6 +178,18 @@ class MetricsLoggerNode(Node):
 
     def state_callback(self, message):
         self.method_state = str(message.data)
+
+    def depth_diagnostic_callback(self, message):
+        try:
+            payload = json.loads(message.data)
+            target = payload.get("classes", {}).get(self.target_model)
+            if not isinstance(target, dict):
+                return
+            self.latest_depth_diagnostic = (payload, target)
+        except (TypeError, ValueError, json.JSONDecodeError) as error:
+            self.get_logger().warning(
+                f"Ignoring invalid depth-fusion diagnostic: {error}"
+            )
 
     def joint_callback(self, message):
         values = dict(zip(message.name, message.position))
@@ -213,6 +245,7 @@ class MetricsLoggerNode(Node):
             "scenario": self.scenario,
             "seed": self.seed,
             "observation_valid": int(self.latest["observed"] is not None),
+            "observation_fresh": 0,
         })
         for key in ("ground_truth", "observed", "selected", "latched"):
             point = self.latest[key]
@@ -230,6 +263,52 @@ class MetricsLoggerNode(Node):
                     row[age_field] = max(
                         0.0, (sim_time_ns - stamp) / 1e9
                     )
+        observed_age = row.get("observation_age_s")
+        if observed_age not in (None, ""):
+            row["observation_fresh"] = int(float(observed_age) <= 0.20)
+
+        if self.latest_depth_diagnostic is not None:
+            payload, target = self.latest_depth_diagnostic
+            row["depth_fusion_status"] = target.get("status", "")
+            for source, field in (
+                ("mask_pixels", "depth_fusion_mask_pixels"),
+                ("component_pixels", "depth_fusion_component_pixels"),
+                ("eroded_pixels", "depth_fusion_eroded_pixels"),
+                ("valid_depth_pixels", "depth_fusion_valid_depth_pixels"),
+                (
+                    "valid_depth_pixels_after_mad",
+                    "depth_fusion_valid_depth_pixels_after_mad",
+                ),
+            ):
+                if source in target:
+                    row[field] = target[source]
+            for source, field in (
+                ("mask_depth_delta_s", "depth_fusion_mask_depth_delta_s"),
+                ("output_rate_hz", "depth_fusion_output_rate_hz"),
+            ):
+                if source in payload:
+                    row[field] = payload[source]
+            for source, field in (
+                ("frame_count", "depth_fusion_frame_count"),
+                ("valid_output_count", "depth_fusion_valid_output_count"),
+            ):
+                if source in payload:
+                    row[field] = payload[source]
+            for point_key, prefix in (
+                ("point_camera", "depth_fusion_point_camera"),
+                ("point_camera_smoothed", "depth_fusion_point_camera_smoothed"),
+            ):
+                point = target.get(point_key)
+                if isinstance(point, (list, tuple)) and len(point) == 3:
+                    row.update({
+                        f"{prefix}_{axis}": value
+                        for axis, value in zip("xyz", point)
+                    })
+            depth_stamp = payload.get("depth_stamp")
+            if depth_stamp is not None:
+                row["depth_fusion_diag_age_s"] = max(
+                    0.0, sim_time_ns / 1e9 - float(depth_stamp)
+                )
         tcp = self.tcp_position()
         if tcp is not None:
             row.update({f"tcp_{axis}": value for axis, value in zip("xyz", tcp)})
@@ -256,7 +335,7 @@ class MetricsLoggerNode(Node):
 
     def write_metadata(self):
         metadata = {
-            "schema_version": 1,
+            "schema_version": 2,
             "run_id": self.run_id,
             "method": self.method,
             "scenario": self.scenario,
@@ -268,6 +347,8 @@ class MetricsLoggerNode(Node):
             "config_hash": self.config_hash,
             "pair_id": self.pair_id,
             "condition_json": self.condition_json,
+            "observation_freshness_threshold_s": 0.20,
+            "depth_fusion_diagnostics_topic": "/foam_grasp/depth_fusion_diagnostics",
         }
         self._atomic_write(
             self.run_dir / "metadata.json",

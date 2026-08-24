@@ -179,6 +179,20 @@ class FoamCameraToBaseNode(Node):
             self.get_logger().warning(description)
             self.last_warning_time = now
 
+    def output_stamp(self, source_stamp):
+        """Stamp the point when the base-frame transform becomes available.
+
+        TF lookup is allowed to wait for a future transform, so retaining the
+        sensor stamp can make a freshly published point appear stale to the
+        method gate.  The source timestamp remains the lookup timestamp; the
+        output timestamp represents point availability.
+        """
+
+        try:
+            return self.get_clock().now().to_msg()
+        except (AttributeError, TypeError):
+            return source_stamp
+
     def point_callback(self, class_id, message):
         if self.transform_source == "tf":
             self.tf_point_callback(class_id, message)
@@ -231,7 +245,7 @@ class FoamCameraToBaseNode(Node):
         self.latest_base_points[class_id] = base_point
 
         output = PointStamped()
-        output.header.stamp = message.header.stamp
+        output.header.stamp = self.output_stamp(message.header.stamp)
         output.header.frame_id = self.base_frame
         output.point.x = float(base_point[0])
         output.point.y = float(base_point[1])
@@ -269,12 +283,7 @@ class FoamCameraToBaseNode(Node):
             return
 
         try:
-            transform = self.tf_buffer.lookup_transform(
-                self.base_frame,
-                source_frame,
-                Time.from_msg(message.header.stamp),
-                timeout=Duration(seconds=self.tf_timeout),
-            )
+            transform = self._lookup_tf_transform(source_frame, message.header.stamp)
             transformed = do_transform_point(message, transform)
         except (TransformException, TypeError, ValueError) as error:
             self.warn_missing_pose(
@@ -291,7 +300,7 @@ class FoamCameraToBaseNode(Node):
         self.latest_base_points[class_id] = base_point
 
         output = PointStamped()
-        output.header.stamp = message.header.stamp
+        output.header.stamp = self.output_stamp(message.header.stamp)
         output.header.frame_id = self.base_frame
         output.point.x = base_point[0]
         output.point.y = base_point[1]
@@ -319,6 +328,46 @@ class FoamCameraToBaseNode(Node):
         marker_array = MarkerArray()
         marker_array.markers.append(marker)
         self.marker_publisher.publish(marker_array)
+
+    @staticmethod
+    def _is_future_extrapolation(error):
+        description = str(error).lower()
+        return "future" in description and "extrapolat" in description
+
+    def _lookup_tf_transform(self, source_frame, stamp):
+        """Get a transform without blocking the RGB-D callback on future TF.
+
+        Gazebo can publish an image whose simulation timestamp is a few
+        milliseconds ahead of the latest TF sample.  A blocking lookup then
+        stalls the single-threaded callback for ``tf_timeout`` and creates
+        artificial observation gaps.  Probe the stamped transform
+        immediately; for future extrapolation, use the latest available TF,
+        which is the closest valid transform.  Other lookup failures retain
+        the configured wait for startup/network delays.
+        """
+        target = self.base_frame
+        stamped = Time.from_msg(stamp)
+        try:
+            return self.tf_buffer.lookup_transform(
+                target,
+                source_frame,
+                stamped,
+                timeout=Duration(seconds=0.0),
+            )
+        except (TransformException, TypeError, ValueError) as error:
+            if self._is_future_extrapolation(error):
+                return self.tf_buffer.lookup_transform(
+                    target,
+                    source_frame,
+                    Time(),
+                    timeout=Duration(seconds=min(self.tf_timeout, 0.02)),
+                )
+            return self.tf_buffer.lookup_transform(
+                target,
+                source_frame,
+                stamped,
+                timeout=Duration(seconds=self.tf_timeout),
+            )
 
     def log_points(self):
         if not self.latest_base_points:

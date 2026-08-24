@@ -82,6 +82,7 @@ def generate_launch_description():
         output="screen",
         parameters=[
             {
+                "use_sim_time": True,
                 "transform_source": "tf",
                 "base_frame": "base_link",
                 "tf_timeout": ParameterValue(LaunchConfiguration("tf_timeout"), value_type=float),
