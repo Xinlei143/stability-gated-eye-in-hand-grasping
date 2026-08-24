@@ -104,6 +104,7 @@ def generate_launch_description():
         package_share
     )
     use_rviz = LaunchConfiguration("use_rviz")
+    start_moveit = LaunchConfiguration("start_moveit")
     target_model = LaunchConfiguration("target_model")
     run_grasp_pipeline = LaunchConfiguration("run_grasp_pipeline")
     execute_motion = LaunchConfiguration("execute_motion")
@@ -158,6 +159,7 @@ def generate_launch_description():
             "use_rviz": use_rviz,
             "start_robot_state_publisher": "false",
         }.items(),
+        condition=IfCondition(start_moveit),
     )
 
     target_spawns = [
@@ -527,6 +529,7 @@ def generate_launch_description():
     return LaunchDescription(
         [
             DeclareLaunchArgument("use_rviz", default_value="true"),
+            DeclareLaunchArgument("start_moveit", default_value="true"),
             DeclareLaunchArgument(
                 "robot_xacro",
                 default_value=str(

@@ -313,6 +313,15 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn('executable="method_policy_node"', method_policy)
         self.assertIn("condition=IfCondition(run_grasp_pipeline)", method_policy)
 
+    def test_moveit_is_explicitly_gated_for_perception_only_runs(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        self.assertIn('start_moveit = LaunchConfiguration("start_moveit")', bringup)
+        moveit_block = bringup.split("moveit_launch = IncludeLaunchDescription", 1)[1].split(
+            "target_spawns =", 1
+        )[0]
+        self.assertIn('condition=IfCondition(start_moveit)', moveit_block)
+        self.assertIn('DeclareLaunchArgument("start_moveit", default_value="true")', bringup)
+
     def test_physics_qualification_has_a_configurable_post_close_hold(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         sequence = (PACKAGE_ROOT.parent / "foam_grasp" / "foam_grasp" / "foam_cube_grasp_sequence.py").read_text()

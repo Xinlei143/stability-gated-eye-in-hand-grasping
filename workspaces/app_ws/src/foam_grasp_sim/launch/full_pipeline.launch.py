@@ -32,6 +32,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(str(package_share / "launch" / "sim_bringup.launch.py")),
         launch_arguments={
             "use_rviz": LaunchConfiguration("use_rviz"),
+            "start_moveit": LaunchConfiguration("start_moveit"),
             "target_model": LaunchConfiguration("target_model"),
             "run_grasp_pipeline": LaunchConfiguration("run_grasp_pipeline"),
             "execute_motion": LaunchConfiguration("execute_motion"),
@@ -128,6 +129,7 @@ def generate_launch_description():
         DeclareLaunchArgument("require_cuda", default_value="true"),
         DeclareLaunchArgument("tf_timeout", default_value="0.2"),
         DeclareLaunchArgument("use_rviz", default_value="false"),
+        DeclareLaunchArgument("start_moveit", default_value="true"),
         DeclareLaunchArgument("target_model", default_value="cube"),
         DeclareLaunchArgument("run_grasp_pipeline", default_value="true"),
         DeclareLaunchArgument("execute_motion", default_value="false"),

@@ -15,6 +15,8 @@ class FullPipelineLaunchTest(unittest.TestCase):
         self.assertIn("piper_eye_in_hand_physics.xacro", source)
         self.assertIn('"prepare_observation_pose": LaunchConfiguration("prepare_observation_pose")', source)
         self.assertIn('DeclareLaunchArgument("prepare_observation_pose", default_value="true")', source)
+        self.assertIn('"start_moveit": LaunchConfiguration("start_moveit")', source)
+        self.assertIn('DeclareLaunchArgument("start_moveit", default_value="true")', source)
         self.assertNotIn('executable="move_to_observe"', source)
         self.assertNotIn("TimerAction", source)
 
