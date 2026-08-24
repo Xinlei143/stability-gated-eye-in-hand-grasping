@@ -256,6 +256,7 @@ def generate_launch_description():
                 "seed": _parameter("seed", int),
             }
         ],
+        condition=IfCondition(run_grasp_pipeline),
     )
 
     pose_parameters = {

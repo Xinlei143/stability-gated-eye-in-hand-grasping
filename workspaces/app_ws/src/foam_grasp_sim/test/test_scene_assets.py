@@ -305,6 +305,14 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn("observation pose preparation failed", bringup)
         self.assertNotIn("TimerAction", bringup)
 
+    def test_run_grasp_pipeline_false_disables_method_policy(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        method_policy = bringup.split("method_policy = Node", 1)[1].split(
+            "pose_parameters =", 1
+        )[0]
+        self.assertIn('executable="method_policy_node"', method_policy)
+        self.assertIn("condition=IfCondition(run_grasp_pipeline)", method_policy)
+
     def test_physics_qualification_has_a_configurable_post_close_hold(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         sequence = (PACKAGE_ROOT.parent / "foam_grasp" / "foam_grasp" / "foam_cube_grasp_sequence.py").read_text()
