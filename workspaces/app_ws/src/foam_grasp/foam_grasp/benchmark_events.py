@@ -8,6 +8,27 @@ EVENT_TOPIC = "/foam_grasp/benchmark_event"
 TERMINAL_EVENTS = frozenset(("TRIAL_FINISHED", "TRIAL_FAILED"))
 
 
+class TrialTaskFailure(RuntimeError):
+    """Expected experimental outcome that must remain in the denominator."""
+
+    def __init__(self, stage, reason):
+        self.stage = str(stage)
+        self.reason = str(reason)
+        super().__init__(self.reason)
+
+
+def task_failure_details(error):
+    """Return the stable terminal-event details for an expected task failure."""
+
+    if not isinstance(error, TrialTaskFailure):
+        raise TypeError("error must be a TrialTaskFailure")
+    return {
+        "outcome": "task_failure",
+        "failure_stage": error.stage,
+        "reason": error.reason,
+    }
+
+
 def make_event(
     event,
     *,

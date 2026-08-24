@@ -62,6 +62,37 @@ class ExperimentRunnerTest(unittest.TestCase):
         self.assertEqual(failed["status"], "failed")
         self.assertFalse(failed["trial_success"])
 
+    def test_expected_task_failure_counts_as_finished_trial(self):
+        status = status_for_terminal({
+            "event": "TRIAL_FINISHED",
+            "details": {
+                "execution_mode": "execute",
+                "outcome": "task_failure",
+                "failure_stage": "planning",
+                "reason": "no collision-free candidate",
+                "task_success": False,
+            },
+        })
+        self.assertEqual(status["status"], "finished")
+        self.assertTrue(status["trial_success"])
+        self.assertFalse(status["task_success"])
+        self.assertEqual(status["outcome"], "task_failure")
+        self.assertEqual(status["failure_stage"], "planning")
+
+    def test_infrastructure_failure_remains_excluded(self):
+        status = status_for_terminal({
+            "event": "TRIAL_FAILED",
+            "details": {
+                "failure_class": "infrastructure",
+                "failure_stage": "runtime",
+                "reason": "metrics logger unavailable",
+            },
+        })
+        self.assertEqual(status["status"], "failed")
+        self.assertFalse(status["trial_success"])
+        self.assertEqual(status["failure_class"], "infrastructure")
+        self.assertEqual(status["failure_stage"], "runtime")
+
     def test_terminal_event_must_match_trial_identity(self):
         from foam_grasp_sim.experiment_runner import terminal_matches
         spec = _specs()[0]
@@ -142,11 +173,15 @@ class ExperimentRunnerTest(unittest.TestCase):
                     "trial_success": True,
                     "task_success": False,
                     "execution_mode": "execute",
+                    "outcome": "task_failure",
+                    "failure_stage": "grasp",
                 },
             )
             self.assertEqual(status["status"], "finished")
             self.assertTrue(status["trial_success"])
             self.assertFalse(status["task_success"])
+            self.assertEqual(status["outcome"], "task_failure")
+            self.assertEqual(status["failure_stage"], "grasp")
 
     def test_execute_task_success_comes_from_metrics(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -164,6 +199,27 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertEqual(status["status"], "finished")
             self.assertTrue(status["trial_success"])
             self.assertTrue(status["task_success"])
+
+    def test_physical_verification_failure_overrides_success_outcome(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "metrics.json").write_text(json.dumps({
+                "physical_grasp_success": False,
+                "task_success": False,
+            }))
+            status = status_for_artifacts(
+                run_dir,
+                {
+                    "status": "finished",
+                    "trial_success": True,
+                    "task_success": True,
+                    "execution_mode": "execute",
+                    "outcome": "success",
+                },
+            )
+            self.assertEqual(status["status"], "finished")
+            self.assertFalse(status["task_success"])
+            self.assertEqual(status["outcome"], "task_failure")
 
     def test_execute_metrics_missing_is_infrastructure_failure(self):
         with tempfile.TemporaryDirectory() as directory:

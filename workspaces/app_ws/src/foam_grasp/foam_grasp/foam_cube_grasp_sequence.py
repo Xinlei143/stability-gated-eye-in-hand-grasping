@@ -26,7 +26,11 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
-from foam_grasp.benchmark_events import BenchmarkEventPublisher
+from foam_grasp.benchmark_events import (
+    BenchmarkEventPublisher,
+    TrialTaskFailure,
+    task_failure_details,
+)
 from foam_grasp.foam_move_to_pregrasp import (
     ARM_JOINTS,
     FoamMoveToPregrasp,
@@ -53,6 +57,17 @@ YAW_CANDIDATES_DEGREES = (-30.0, -15.0, 15.0, 30.0)
 RADIAL_OUTWARD_TILT_DEGREES = (5.0, 10.0, 15.0, 20.0)
 RADIAL_INWARD_TILT_DEGREES = (5.0, 10.0)
 TANGENTIAL_TILT_DEGREES = (-10.0, -5.0, 5.0, 10.0)
+
+
+def _task_phase(stage, callback, *args, **kwargs):
+    """Convert expected phase-level RuntimeErrors into task outcomes."""
+
+    try:
+        return callback(*args, **kwargs)
+    except TrialTaskFailure:
+        raise
+    except RuntimeError as error:
+        raise TrialTaskFailure(stage, str(error)) from error
 
 
 class FoamCubeGraspSequence(FoamMoveToPregrasp):
@@ -196,7 +211,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             if self.method_ready:
                 print("方法层已READY，开始锁定执行目标。")
                 return
-        raise RuntimeError(f"方法层在{timeout:.1f}s内未达到READY")
+        raise TrialTaskFailure("readiness", f"方法层在{timeout:.1f}s内未达到READY")
 
     def wait_for_sequence_inputs(self):
         self.wait_for_inputs(timeout_sec=8.0)
@@ -245,7 +260,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                 5.0,
             )
             if not response.success:
-                raise RuntimeError("提交方法目标失败: " + response.message)
+                raise TrialTaskFailure("readiness", "提交方法目标失败: " + response.message)
             print("方法目标已提交：" + response.message)
         else:
             # Keep the real-camera workflow compatible while the simulation
@@ -259,13 +274,13 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                 self.clear_latch_client, Trigger.Request(), 5.0
             )
             if not clear_response.success:
-                raise RuntimeError("清除旧锁定目标失败: " + clear_response.message)
+                raise TrialTaskFailure("readiness", "清除旧锁定目标失败: " + clear_response.message)
             self.spin_for(2.0)
             response = self.call_service(
                 self.latch_target_client, Trigger.Request(), 5.0
             )
             if not response.success:
-                raise RuntimeError("兼容锁定失败: " + response.message)
+                raise TrialTaskFailure("readiness", "兼容锁定失败: " + response.message)
             print("兼容锁定成功：" + response.message)
         self.pregrasp_pose = None
         self.pregrasp_received_at = 0.0
@@ -290,7 +305,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             5.0,
         )
         if not response.success:
-            raise RuntimeError("接触确认辅助夹持失败: " + response.message)
+            raise TrialTaskFailure("grasp", "接触确认辅助夹持失败: " + response.message)
         self.emit_event(
             "GRASP_ASSIST_PREPARED",
             details={"message": response.message},
@@ -1310,23 +1325,30 @@ def main(argv=None):
                 # Tracking needs MoveIt clients before its first receding-
                 # horizon PREGRASP plan.  The final commit is made only after
                 # the latest preview is fresh and mechanically reached.
-                node.wait_for_sequence_inputs()
+                _task_phase("readiness", node.wait_for_sequence_inputs)
                 node.wait_for_sequence_services()
                 node.spin_for(0.8)
                 node.apply_table()
-                node.follow_tracking_target(execute=args.execute, args=args)
+                _task_phase(
+                    "readiness",
+                    node.follow_tracking_target,
+                    execute=args.execute,
+                    args=args,
+                )
             else:
                 node.auto_latch_target()
-        node.wait_for_sequence_inputs()
+        _task_phase("readiness", node.wait_for_sequence_inputs)
         node.wait_for_sequence_services()
         # Service discovery/planning setup can briefly leave the most recent
         # feedback older than the strict live-state threshold. Refresh a full
         # stable window immediately before validating the start state.
         node.spin_for(0.8)
-        node.validate_sequence_targets()
+        _task_phase("safety", node.validate_sequence_targets)
         # The sequence actively opens the empty gripper at the safe starting
         # pose, so it does not require the gripper to be pre-opened manually.
-        start_positions = node.validate_live_state(
+        start_positions = _task_phase(
+            "safety",
+            node.validate_live_state,
             require_open_gripper=False,
             allow_not_at_target=True,
         )
@@ -1334,7 +1356,9 @@ def main(argv=None):
         start_state = node.current_robot_state()
         node.emit_event("PLAN_STARTED", details={"phase": "final_candidate"})
         try:
-            selected = node.select_grasp_candidate(start_state, start_positions)
+            selected = _task_phase(
+                "planning", node.select_grasp_candidate, start_state, start_positions
+            )
         except Exception as error:
             node.emit_event("PLAN_FAILED", details={"phase": "final_candidate", "reason": str(error)})
             raise
@@ -1383,7 +1407,11 @@ def main(argv=None):
             print("PLAN-ONLY：没有创建/joint_states发布者，没有移动或抓取。")
             node.emit_event(
                 "TRIAL_FINISHED",
-                details={"execution_mode": "plan_only", "task_success": False},
+                details={
+                    "execution_mode": "plan_only",
+                    "task_success": False,
+                    "outcome": "plan_only",
+                },
             )
             terminal_emitted = True
             node.spin_for(0.2)
@@ -1400,7 +1428,7 @@ def main(argv=None):
         )
         drift = max(abs(a - b) for a, b in zip(refreshed[:6], start_positions[:6]))
         if drift > 0.02:
-            raise RuntimeError(f"倒计时期间机械臂移动了{drift:.4f}rad")
+            raise TrialTaskFailure("safety", f"倒计时期间机械臂移动了{drift:.4f}rad")
 
         node.prepare_command_publisher()
         preopen_target_m = args.preopen_opening_mm / 1000.0
@@ -1411,7 +1439,8 @@ def main(argv=None):
         )
         preopen_feedback = node.command_gripper(preopen_target_m, args)
         if preopen_feedback < preopen_target_m - 0.004:
-            raise RuntimeError(
+            raise TrialTaskFailure(
+                "safety",
                 "夹爪没有充分张开: "
                 f"目标{args.preopen_opening_mm:.1f}mm，"
                 f"反馈{preopen_feedback * 1000.0:.1f}mm"
@@ -1422,7 +1451,8 @@ def main(argv=None):
             for actual, previous in zip(after_open[:6], refreshed[:6])
         )
         if open_arm_drift > 0.020:
-            raise RuntimeError(
+            raise TrialTaskFailure(
+                "safety",
                 "高位张开夹爪期间机械臂发生偏移: "
                 f"{open_arm_drift:.4f}rad"
             )
@@ -1442,7 +1472,8 @@ def main(argv=None):
         preopen_feedback = node.current_positions()[6]
         print(f"到达高位时夹爪开口：{preopen_feedback * 1000.0:.1f} mm")
         if preopen_feedback < preopen_target_m - 0.004:
-            raise RuntimeError(
+            raise TrialTaskFailure(
+                "safety",
                 "夹爪没有充分张开: "
                 f"目标{args.preopen_opening_mm:.1f}mm，"
                 f"反馈{preopen_feedback * 1000.0:.1f}mm"
@@ -1454,7 +1485,9 @@ def main(argv=None):
             preopen_target_m,
             args,
         )
-        node.validate_checkpoint(
+        _task_phase(
+            "safety",
+            node.validate_checkpoint,
             "PREGRASP",
             active_pregrasp_pose,
             active_pregrasp_joints,
@@ -1487,11 +1520,15 @@ def main(argv=None):
             approach_trajectory = (
                 approach_to_execute.solution.joint_trajectory
             )
-            node.validate_cartesian_trajectory(
+            _task_phase(
+                "planning",
+                node.validate_cartesian_trajectory,
                 "PREVALIDATED_APPROACH_PAIR",
                 approach_trajectory,
             )
-            node.validate_cartesian_trajectory(
+            _task_phase(
+                "planning",
+                node.validate_cartesian_trajectory,
                 "PREVALIDATED_LIFT_PAIR",
                 paired_lift.solution.joint_trajectory,
             )
@@ -1508,7 +1545,8 @@ def main(argv=None):
                 )
             )
             if pair_start_error > 0.020:
-                raise RuntimeError(
+                raise TrialTaskFailure(
+                    "planning",
                     "无法从真实PREGRASP获得配对下降/抬升路径，"
                     f"且当前关节与预验证起点相差"
                     f"{pair_start_error:.4f}rad。原因: {paired_replan_error}"
@@ -1537,7 +1575,9 @@ def main(argv=None):
             preopen_target_m,
             args,
         )
-        node.validate_checkpoint(
+        _task_phase(
+            "safety",
+            node.validate_checkpoint,
             "GRASP",
             active_grasp_pose,
             grasp_checkpoint_joints,
@@ -1566,7 +1606,8 @@ def main(argv=None):
             "尚未由接触力确认物理夹持"
         )
         if jaw_blocked_margin_mm < args.minimum_grip_margin_mm:
-            raise RuntimeError(
+            raise TrialTaskFailure(
+                "grasp",
                 f"未获得{args.target_class}的接触阻挡证据：余量仅"
                 f"{jaw_blocked_margin_mm:.1f}mm；拒绝抬升"
             )
@@ -1587,7 +1628,9 @@ def main(argv=None):
             close_target_m,
             args,
         )
-        node.validate_checkpoint(
+        _task_phase(
+            "safety",
+            node.validate_checkpoint,
             "GRASP_AFTER_CLOSE",
             active_grasp_pose,
             grasp_checkpoint_joints,
@@ -1612,10 +1655,13 @@ def main(argv=None):
             validated_lift = paired_lift
             trajectory = validated_lift.solution.joint_trajectory
             if not trajectory.points:
-                raise RuntimeError(
+                raise TrialTaskFailure(
+                    "planning",
                     f"实时抬升失败且预验证轨迹为空: {replan_error}"
                 ) from replan_error
-            node.validate_cartesian_trajectory(
+            _task_phase(
+                "planning",
+                node.validate_cartesian_trajectory,
                 "GRASP_TO_LIFT_PREVALIDATED_FALLBACK",
                 trajectory,
             )
@@ -1628,7 +1674,8 @@ def main(argv=None):
                 for actual, planned in zip(actual_arm, validated_start)
             )
             if fallback_start_error > 0.020:
-                raise RuntimeError(
+                raise TrialTaskFailure(
+                    "planning",
                     "实时抬升路径失败，且当前关节与预验证"
                     f"抬升起点相差{fallback_start_error:.4f}rad；"
                     f"拒绝复用轨迹。原因: {replan_error}"
@@ -1653,7 +1700,11 @@ def main(argv=None):
         node.emit_event("EXECUTION_FINISHED", details={"target_class": args.target_class})
         node.emit_event(
             "TRIAL_FINISHED",
-            details={"execution_mode": "execute"},
+            details={
+                "execution_mode": "execute",
+                "task_success": True,
+                "outcome": "success",
+            },
         )
         terminal_emitted = True
         node.spin_for(0.2)
@@ -1669,10 +1720,29 @@ def main(argv=None):
         print("已取消并尝试保持当前位置；异常时使用硬件急停。")
         node.emit_event(
             "TRIAL_FAILED",
-            details={"reason": "keyboard_interrupt", "execution_mode": "execute"},
+            details={
+                "reason": "keyboard_interrupt",
+                "execution_mode": "execute",
+                "failure_class": "infrastructure",
+                "failure_stage": "interrupted",
+            },
         )
         node.spin_for(0.2)
         return 130
+    except TrialTaskFailure as error:
+        if node.execution_backend.can_hold and node.latest_joint_state is not None:
+            current = node.current_positions()
+            node.publish_hold(current[6], args.speed_percent, args.effort)
+        print(f"任务失败，保留本次trial用于统计：{error}", file=sys.stderr)
+        details = {
+            "execution_mode": "execute" if args.execute else "plan_only",
+            "task_success": False,
+        }
+        details.update(task_failure_details(error))
+        node.emit_event("TRIAL_FINISHED", details=details)
+        terminal_emitted = True
+        node.spin_for(0.2)
+        return 0
     except Exception as error:
         if node.execution_backend.can_hold and node.latest_joint_state is not None:
             current = node.current_positions()
@@ -1680,7 +1750,12 @@ def main(argv=None):
         print(f"安全拒绝/中止：{error}", file=sys.stderr)
         node.emit_event(
             "TRIAL_FAILED",
-            details={"reason": str(error), "error_type": type(error).__name__},
+            details={
+                "reason": str(error),
+                "error_type": type(error).__name__,
+                "failure_class": "infrastructure",
+                "failure_stage": "runtime",
+            },
         )
         node.spin_for(0.2)
         return 1

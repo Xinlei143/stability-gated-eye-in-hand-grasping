@@ -32,7 +32,7 @@ def _write_campaign(root: Path):
     (root / "runs" / "run-a" / "metadata.json").write_text(json.dumps({"run_id": "run-a", "pair_id": "pair-1", "condition_json": json.dumps({"latency_ms": 10})}), encoding="utf-8")
     (root / "runs" / "run-a" / "states.csv").write_text("sim_time_ns\n1\n", encoding="utf-8")
     (root / "runs" / "run-a" / "events.csv").write_text("event\nTRIAL_FINISHED\n", encoding="utf-8")
-    (root / "runs" / "run-a" / "metrics.json").write_text(json.dumps({"trial_success": True, "task_success": False, "tracking_rms_error_m": 0.01, "time_to_ready_s": 2.0}), encoding="utf-8")
+    (root / "runs" / "run-a" / "metrics.json").write_text(json.dumps({"trial_success": True, "task_success": False, "outcome": "task_failure", "failure_stage": "planning", "failure_reason": "no candidate", "tracking_rms_error_m": 0.01, "time_to_ready_s": 2.0}), encoding="utf-8")
 
 
 class BenchmarkIoTest(unittest.TestCase):
@@ -71,6 +71,18 @@ class BenchmarkIoTest(unittest.TestCase):
             self.assertTrue((output / "run_metrics.csv").is_file())
             self.assertTrue((output / "excluded_runs.csv").is_file())
             self.assertEqual((root / "campaign.json").read_bytes(), before)
+
+    def test_summary_preserves_task_failure_classification(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "campaign"
+            root.mkdir()
+            _write_campaign(root)
+            output = summarize_campaign(root)
+            with (output / "run_metrics.csv").open(encoding="utf-8", newline="") as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertEqual(rows[0]["outcome"], "task_failure")
+            self.assertEqual(rows[0]["failure_stage"], "planning")
+            self.assertEqual(rows[0]["failure_reason"], "no candidate")
 
 
 if __name__ == "__main__":

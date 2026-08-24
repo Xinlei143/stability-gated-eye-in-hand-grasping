@@ -29,8 +29,8 @@ RUN_ARTIFACTS = ("metadata.json", "states.csv", "events.csv", "metrics.json")
 TRIAL_FIELDS = (
     "run_id", "pair_id", "method", "trajectory", "scenario", "seed", "config_hash",
     "status", "attempt", "started_at", "finished_at", "exit_code", "terminal_event",
-    "trial_success", "task_success", "artifacts_complete", "result_path", "log_path",
-    "cleanup", "error",
+    "trial_success", "task_success", "outcome", "failure_class", "failure_stage",
+    "artifacts_complete", "result_path", "log_path", "cleanup", "error",
 )
 
 
@@ -70,16 +70,25 @@ def status_for_terminal(event: Mapping[str, Any]) -> dict[str, Any]:
     details = dict(event.get("details") or {})
     if name == "TRIAL_FINISHED":
         execution_mode = str(details.get("execution_mode", "execute"))
-        if execution_mode == "plan_only":
-            return {
-                "status": "finished", "trial_success": True,
-                "task_success": False, "execution_mode": execution_mode,
-            }
+        task_success = bool(details.get("task_success", False))
+        outcome = str(
+            details.get("outcome")
+            or ("success" if task_success else "task_failure")
+        )
         return {
             "status": "finished", "trial_success": True,
-            "task_success": False, "execution_mode": execution_mode,
+            "task_success": task_success, "execution_mode": execution_mode,
+            "outcome": outcome,
+            "failure_stage": str(details.get("failure_stage", "")),
+            "error": str(details.get("reason", "")),
         }
-    return {"status": "failed", "trial_success": False, "task_success": False}
+    return {
+        "status": "failed", "trial_success": False, "task_success": False,
+        "outcome": "infrastructure_failure",
+        "failure_class": str(details.get("failure_class", "infrastructure")),
+        "failure_stage": str(details.get("failure_stage", "runtime")),
+        "error": str(details.get("reason", "")),
+    }
 
 
 def terminal_matches(spec: TrialSpec, event: Mapping[str, Any]) -> bool:
@@ -106,21 +115,32 @@ def status_for_artifacts(run_dir: Path, status: Mapping[str, Any]) -> dict[str, 
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
         if result.get("execution_mode") == "execute":
-            return {
+            result.update({
                 "status": "failed", "trial_success": False,
-                "task_success": False, "error": "execute metrics missing",
-            }
+                "task_success": False, "outcome": "infrastructure_failure",
+                "failure_class": "infrastructure", "failure_stage": "metrics",
+                "error": "execute metrics missing",
+            })
+            return result
         return result
     if result.get("execution_mode") == "execute":
         if not isinstance(metrics.get("task_success"), bool):
-            return {
+            result.update({
                 "status": "failed", "trial_success": False,
-                "task_success": False, "error": "execute metrics task_success missing",
-            }
-        return {
+                "task_success": False, "outcome": "infrastructure_failure",
+                "failure_class": "infrastructure", "failure_stage": "metrics",
+                "error": "execute metrics task_success missing",
+            })
+            return result
+        result.update({
             "status": "finished", "trial_success": True,
             "task_success": metrics["task_success"],
-        }
+        })
+        if metrics["task_success"]:
+            result.update({"outcome": "success", "failure_stage": "", "error": ""})
+        else:
+            result.update({"outcome": "task_failure"})
+        return result
     if result.get("task_success") and metrics.get("physical_grasp_success") is not True:
         return {
             "status": "failed", "trial_success": False,
@@ -299,6 +319,7 @@ class CampaignRunner:
             "trajectory": spec.trajectory, "scenario": spec.scenario, "seed": str(spec.seed),
             "config_hash": spec.config_hash, "status": "pending", "attempt": "0",
             "trial_success": "false", "task_success": "false", "artifacts_complete": "false",
+            "outcome": "", "failure_class": "", "failure_stage": "",
         }
 
     def _acquire_runtime_lock(self) -> None:
@@ -464,13 +485,22 @@ class CampaignRunner:
             artifacts_complete(run_dir, self._extra_artifacts(spec))
         ).lower()
         if timed_out:
-            row.update({"status": "timed_out", "error": "trial timeout"})
+            row.update({
+                "status": "timed_out", "outcome": "infrastructure_failure",
+                "failure_class": "infrastructure", "failure_stage": "timeout",
+                "error": "trial timeout",
+            })
         elif terminal is not None:
             values = status_for_terminal(terminal)
             values = status_for_artifacts(run_dir, values)
             row.update({key: str(value).lower() for key, value in values.items()})
         else:
-            row.update({"status": "failed", "trial_success": "false", "task_success": "false", "error": "process exited without terminal event"})
+            row.update({
+                "status": "failed", "trial_success": "false", "task_success": "false",
+                "outcome": "infrastructure_failure", "failure_class": "infrastructure",
+                "failure_stage": "terminal_event",
+                "error": "process exited without terminal event",
+            })
         self.rows[spec.run_id] = row
         self._write_rows()
         return row

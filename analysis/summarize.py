@@ -34,6 +34,10 @@ def _run_row(record: RunRecord) -> dict[str, Any]:
         "seed": record.seed,
         "trial_success": record.metrics.get("trial_success", False),
         "task_success": record.metrics.get("task_success", False),
+        "outcome": record.metrics.get("outcome", ""),
+        "failure_class": record.metrics.get("failure_class", ""),
+        "failure_stage": record.metrics.get("failure_stage", ""),
+        "failure_reason": record.metrics.get("failure_reason", ""),
     }
     for key in sorted(record.condition):
         value = record.condition[key]
