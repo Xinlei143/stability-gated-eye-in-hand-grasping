@@ -3,7 +3,6 @@ from pathlib import Path
 
 from foam_grasp.depth_fusion_diagnostics import (
     build_diagnostic,
-    select_closest_mask,
 )
 
 
@@ -29,6 +28,7 @@ class DepthFusionDiagnosticsTest(unittest.TestCase):
         )
 
         self.assertEqual(record["schema_version"], 1)
+        self.assertAlmostEqual(record["mask_age_s"], 0.02)
         self.assertAlmostEqual(record["mask_depth_delta_s"], 0.02)
         self.assertEqual(record["classes"]["cube"]["valid_depth_pixels"], 650)
         self.assertEqual(record["classes"]["cube"]["point_camera"], [0.01, -0.02, 0.40])
@@ -51,15 +51,23 @@ class DepthFusionDiagnosticsTest(unittest.TestCase):
         ):
             self.assertIn(status, source)
         self.assertIn("DIAGNOSTIC_TOPIC", source)
+        self.assertIn("latest_mask", source)
+        self.assertIn("latest_mask_stamp", source)
+        self.assertNotIn("mask_history", source)
+        self.assertNotIn("select_closest_mask", source)
 
-    def test_closest_mask_selection_avoids_latest_frame_lag(self):
-        selected = select_closest_mask(
-            [(10.00, "old"), (10.06, "near"), (10.20, "future")],
-            depth_stamp=10.08,
+    def test_diagnostic_preserves_signed_negative_mask_age(self):
+        record = build_diagnostic(
+            depth_stamp=11.98,
+            mask_stamp=12.00,
+            frame_id="camera_color_optical_frame",
+            frame_count=1,
+            valid_output_count=0,
+            output_rate_hz=30.0,
+            classes={},
         )
-        self.assertEqual(selected, (10.06, "near"))
-
-        self.assertIsNone(select_closest_mask([], depth_stamp=10.0))
+        self.assertAlmostEqual(record["mask_age_s"], -0.02)
+        self.assertAlmostEqual(record["mask_depth_delta_s"], 0.02)
 
 
 if __name__ == "__main__":

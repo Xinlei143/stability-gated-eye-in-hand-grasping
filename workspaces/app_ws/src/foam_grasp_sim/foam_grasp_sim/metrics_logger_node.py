@@ -37,7 +37,8 @@ STATE_FIELDS = (
     "depth_fusion_component_pixels", "depth_fusion_eroded_pixels",
     "depth_fusion_valid_depth_pixels",
     "depth_fusion_valid_depth_pixels_after_mad",
-    "depth_fusion_mask_depth_delta_s", "depth_fusion_diag_age_s",
+    "depth_fusion_mask_age_s", "depth_fusion_mask_depth_delta_s",
+    "depth_fusion_diag_age_s",
     "depth_fusion_output_rate_hz", "depth_fusion_frame_count",
     "depth_fusion_valid_output_count",
     "depth_fusion_point_camera_x", "depth_fusion_point_camera_y",
@@ -283,6 +284,7 @@ class MetricsLoggerNode(Node):
                 if source in target:
                     row[field] = target[source]
             for source, field in (
+                ("mask_age_s", "depth_fusion_mask_age_s"),
                 ("mask_depth_delta_s", "depth_fusion_mask_depth_delta_s"),
                 ("output_rate_hz", "depth_fusion_output_rate_hz"),
             ):

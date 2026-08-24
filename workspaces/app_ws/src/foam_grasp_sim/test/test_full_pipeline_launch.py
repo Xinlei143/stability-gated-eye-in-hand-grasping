@@ -49,6 +49,7 @@ class FullPipelineLaunchTest(unittest.TestCase):
             "depth_fusion_mask_pixels",
             "depth_fusion_valid_depth_pixels",
             "depth_fusion_mask_depth_delta_s",
+            "depth_fusion_mask_age_s",
         ):
             self.assertIn(field, source)
         self.assertIn("/foam_grasp/depth_fusion_diagnostics", source)

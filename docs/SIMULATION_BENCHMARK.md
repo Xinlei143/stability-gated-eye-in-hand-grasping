@@ -207,6 +207,44 @@ It emits one JSON record per depth frame with explicit failure reasons such as
 freshness threshold of 0.20 s for `observation_fresh`; this is separate from
 the 0.15 s mask/depth synchronization limit.
 
+The runtime synchronization contract intentionally matches the real DaBai
+pipeline: each depth callback uses the latest received mask and the current
+depth frame. It does not use a depth buffer, `message_filters`, or approximate
+time synchronization. Each diagnostic record contains:
+
+- `depth_stamp`: current depth header timestamp;
+- `mask_stamp`: the source RGB timestamp preserved on the segmentation mask;
+- `mask_age_s = depth_stamp - mask_stamp` (signed);
+- `mask_depth_delta_s = abs(mask_age_s)` (the value used by the 0.15 s gate).
+
+For a 30--60 second synchronization check, source the project environment and
+capture the diagnostic topic in a separate terminal while the RGB-D launch is
+running:
+
+```bash
+export ROS_LOG_DIR=/tmp/foam-depth-fusion-sync-roslog
+mkdir -p "$ROS_LOG_DIR"
+source scripts/source_env.sh
+timeout 60s ros2 topic echo --no-daemon --full-length \
+  /foam_grasp/depth_fusion_diagnostics \
+  > /tmp/foam-depth-fusion-sync.yaml
+PYTHONPATH=. python3 analysis/depth_fusion_sync_quality.py \
+  /tmp/foam-depth-fusion-sync.yaml --target-class cube
+```
+
+During the same run, inspect the delivered rates in separate terminals:
+
+```bash
+ros2 topic hz /camera/color/image_raw
+ros2 topic hz /camera/depth/image_raw
+ros2 topic hz /foam_segmentation/mask
+```
+
+The synchronization check passes only when the absolute-age p95 is below
+150 ms and no paired record exceeds 150 ms. If it fails, first compare the
+RGB, depth, and mask rates with the segmentation node's reported FPS and
+latency. Do not relax the threshold or add runtime buffering as a first step.
+
 For raw localization qualification, compare the observed base-frame point
 directly with ground truth:
 

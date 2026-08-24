@@ -20,7 +20,6 @@ from visualization_msgs.msg import Marker, MarkerArray
 
 from foam_grasp.depth_fusion_diagnostics import (
     build_diagnostic,
-    select_closest_mask,
 )
 
 
@@ -61,7 +60,6 @@ class FoamDepthFusionNode(Node):
         self.bridge = CvBridge()
         self.latest_mask = None
         self.latest_mask_stamp = None
-        self.mask_history = deque(maxlen=12)
         self.camera_intrinsics = None
         self.last_log_time = time.monotonic()
         self.diagnostic_start_time = time.monotonic()
@@ -162,7 +160,6 @@ class FoamDepthFusionNode(Node):
 
         self.latest_mask = np.asarray(mask, dtype=np.uint8).copy()
         self.latest_mask_stamp = stamp_to_seconds(message.header.stamp)
-        self.mask_history.append((self.latest_mask_stamp, self.latest_mask))
 
     @staticmethod
     def largest_component(binary_mask):
@@ -319,8 +316,7 @@ class FoamDepthFusionNode(Node):
     def depth_callback(self, message):
         self.depth_frame_count += 1
         depth_stamp = stamp_to_seconds(message.header.stamp)
-        selected_mask = select_closest_mask(self.mask_history, depth_stamp)
-        if selected_mask is None:
+        if self.latest_mask is None or self.latest_mask_stamp is None:
             self.publish_diagnostic(
                 depth_stamp,
                 message.header.frame_id,
@@ -339,7 +335,8 @@ class FoamDepthFusionNode(Node):
                 },
             )
             return
-        mask_stamp, mask = selected_mask
+        mask_stamp = self.latest_mask_stamp
+        mask = self.latest_mask
         if self.camera_intrinsics is None:
             self.publish_diagnostic(
                 depth_stamp,

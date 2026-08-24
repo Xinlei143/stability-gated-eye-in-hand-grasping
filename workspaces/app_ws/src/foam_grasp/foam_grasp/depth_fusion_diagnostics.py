@@ -25,13 +25,16 @@ def build_diagnostic(
 ) -> dict[str, object]:
     """Build the stable JSON payload published for every depth frame."""
 
+    mask_age = None
     delta = None
     if mask_stamp is not None:
-        delta = abs(float(depth_stamp) - float(mask_stamp))
+        mask_age = float(depth_stamp) - float(mask_stamp)
+        delta = abs(mask_age)
     return {
         "schema_version": 1,
         "depth_stamp": float(depth_stamp),
         "mask_stamp": None if mask_stamp is None else float(mask_stamp),
+        "mask_age_s": mask_age,
         "mask_depth_delta_s": delta,
         "frame_id": str(frame_id),
         "frame_count": int(frame_count),
@@ -39,11 +42,3 @@ def build_diagnostic(
         "output_rate_hz": _finite_or_none(output_rate_hz),
         "classes": {str(name): dict(values) for name, values in classes.items()},
     }
-
-
-def select_closest_mask(history, depth_stamp: float):
-    """Select the buffered mask whose timestamp is closest to a depth frame."""
-
-    if not history:
-        return None
-    return min(history, key=lambda item: abs(float(item[0]) - float(depth_stamp)))
