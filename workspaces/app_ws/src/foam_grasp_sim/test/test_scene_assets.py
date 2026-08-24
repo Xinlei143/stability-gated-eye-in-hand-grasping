@@ -296,6 +296,15 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn("Shutdown", failure_path)
         self.assertNotIn("target_spawns", failure_path)
 
+    def test_observation_pose_is_an_optional_event_driven_gate(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        self.assertIn('"prepare_observation_pose"', bringup)
+        self.assertIn('executable="move_to_observe"', bringup)
+        self.assertIn("_after_observation_pose", bringup)
+        self.assertIn("target_action=move_to_observe", bringup)
+        self.assertIn("observation pose preparation failed", bringup)
+        self.assertNotIn("TimerAction", bringup)
+
     def test_physics_qualification_has_a_configurable_post_close_hold(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         sequence = (PACKAGE_ROOT.parent / "foam_grasp" / "foam_grasp" / "foam_cube_grasp_sequence.py").read_text()
