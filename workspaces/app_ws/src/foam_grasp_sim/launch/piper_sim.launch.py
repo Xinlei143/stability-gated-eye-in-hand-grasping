@@ -21,7 +21,17 @@ def _controller_spawner(name):
     return Node(
         package="controller_manager",
         executable="spawner",
-        arguments=[name, "--controller-manager", "/controller_manager"],
+        arguments=[
+            name,
+            "--controller-manager",
+            "/controller_manager",
+            "--controller-manager-timeout",
+            "60.0",
+            "--service-call-timeout",
+            "30.0",
+            "--switch-timeout",
+            "30.0",
+        ],
         output="screen",
     )
 

@@ -26,7 +26,11 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
 
-from foam_grasp.benchmark_events import BenchmarkEventPublisher
+from foam_grasp.benchmark_events import (
+    BenchmarkEventPublisher,
+    TrialTaskFailure,
+    task_failure_details,
+)
 from foam_grasp.foam_move_to_pregrasp import (
     ARM_JOINTS,
     FoamMoveToPregrasp,
@@ -53,6 +57,19 @@ YAW_CANDIDATES_DEGREES = (-30.0, -15.0, 15.0, 30.0)
 RADIAL_OUTWARD_TILT_DEGREES = (5.0, 10.0, 15.0, 20.0)
 RADIAL_INWARD_TILT_DEGREES = (5.0, 10.0)
 TANGENTIAL_TILT_DEGREES = (-10.0, -5.0, 5.0, 10.0)
+TRACKING_MAX_IK_FEASIBLE = 8
+TRACKING_MAX_MOVEIT_PLANS = 4
+
+
+def _task_phase(stage, callback, *args, **kwargs):
+    """Convert expected phase-level RuntimeErrors into task outcomes."""
+
+    try:
+        return callback(*args, **kwargs)
+    except TrialTaskFailure:
+        raise
+    except RuntimeError as error:
+        raise TrialTaskFailure(stage, str(error)) from error
 
 
 class FoamCubeGraspSequence(FoamMoveToPregrasp):
@@ -196,7 +213,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             if self.method_ready:
                 print("方法层已READY，开始锁定执行目标。")
                 return
-        raise RuntimeError(f"方法层在{timeout:.1f}s内未达到READY")
+        raise TrialTaskFailure("readiness", f"方法层在{timeout:.1f}s内未达到READY")
 
     def wait_for_sequence_inputs(self):
         self.wait_for_inputs(timeout_sec=8.0)
@@ -245,7 +262,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                 5.0,
             )
             if not response.success:
-                raise RuntimeError("提交方法目标失败: " + response.message)
+                raise TrialTaskFailure("readiness", "提交方法目标失败: " + response.message)
             print("方法目标已提交：" + response.message)
         else:
             # Keep the real-camera workflow compatible while the simulation
@@ -259,13 +276,13 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                 self.clear_latch_client, Trigger.Request(), 5.0
             )
             if not clear_response.success:
-                raise RuntimeError("清除旧锁定目标失败: " + clear_response.message)
+                raise TrialTaskFailure("readiness", "清除旧锁定目标失败: " + clear_response.message)
             self.spin_for(2.0)
             response = self.call_service(
                 self.latch_target_client, Trigger.Request(), 5.0
             )
             if not response.success:
-                raise RuntimeError("兼容锁定失败: " + response.message)
+                raise TrialTaskFailure("readiness", "兼容锁定失败: " + response.message)
             print("兼容锁定成功：" + response.message)
         self.pregrasp_pose = None
         self.pregrasp_received_at = 0.0
@@ -290,7 +307,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             5.0,
         )
         if not response.success:
-            raise RuntimeError("接触确认辅助夹持失败: " + response.message)
+            raise TrialTaskFailure("grasp", "接触确认辅助夹持失败: " + response.message)
         self.emit_event(
             "GRASP_ASSIST_PREPARED",
             details={"message": response.message},
@@ -314,6 +331,160 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             return math.inf
         return max(0.0, time.monotonic() - self.pregrasp_received_at)
 
+    def tracking_pose_snapshot(self):
+        """Return a coherent PREGRASP/GRASP/LIFT observation triplet."""
+
+        poses = (
+            self.pregrasp_pose,
+            self.grasp_pose,
+            self.lift_pose,
+        )
+        if any(pose is None for pose in poses):
+            return None
+        stamps = [
+            (
+                int(pose.header.stamp.sec),
+                int(pose.header.stamp.nanosec),
+            )
+            for pose in poses
+        ]
+        if len(set(stamps)) != 1:
+            return None
+        return tuple(copy.deepcopy(pose) for pose in poses)
+
+    def latest_tracking_pose_age(self):
+        received_at = (
+            self.pregrasp_received_at,
+            self.grasp_received_at,
+            self.lift_received_at,
+        )
+        if any(value <= 0.0 for value in received_at):
+            return math.inf
+        return max(0.0, time.monotonic() - min(received_at))
+
+    @staticmethod
+    def tracking_observation_drift(latest_observation, planned_observation):
+        return FoamCubeGraspSequence.pose_distance(
+            latest_observation,
+            planned_observation,
+        )
+
+    def select_tracking_pregrasp_candidate(
+        self,
+        pose_triplet,
+        start_state,
+        start_positions,
+    ):
+        """Select a bounded, formal-candidate PREGRASP tracking plan."""
+
+        pregrasp_pose, grasp_pose, lift_pose = (
+            copy.deepcopy(pose) for pose in pose_triplet
+        )
+        candidates = self.grasp_pose_candidates_from_poses(
+            pregrasp_pose,
+            grasp_pose,
+            lift_pose,
+        )
+        ik_feasible = []
+        failure_examples = []
+        ik_attempts = 0
+        for candidate in candidates:
+            ik_attempts += 1
+            try:
+                pregrasp_state, pregrasp_joints = self.compute_ik_for_pose(
+                    (
+                        f"{candidate['label']}/"
+                        f"{candidate['clearance'] * 1000.0:.0f}mm "
+                        "TRACKING_PREGRASP"
+                    ),
+                    candidate["pregrasp_pose"],
+                    start_state,
+                    ik_timeout=0.35,
+                )
+                joint_margin = self.normalized_joint_margin(pregrasp_joints)
+                start_travel = sum(
+                    abs(goal - start)
+                    for goal, start in zip(
+                        pregrasp_joints,
+                        start_positions[:6],
+                    )
+                )
+                candidate.update(
+                    {
+                        "pregrasp_state": pregrasp_state,
+                        "pregrasp_joints": pregrasp_joints,
+                        "joint_margin": joint_margin,
+                        "base_score": (
+                            1.5 * candidate["orientation_error"]
+                            + 0.20 * start_travel
+                            + 8.0 * (
+                                CLEARANCE_CANDIDATES[0]
+                                - candidate["clearance"]
+                            )
+                            - 3.0 * joint_margin
+                        ),
+                        "observation_pose": copy.deepcopy(pregrasp_pose),
+                        "ik_attempts": ik_attempts,
+                    }
+                )
+                ik_feasible.append(candidate)
+                if len(ik_feasible) >= TRACKING_MAX_IK_FEASIBLE:
+                    break
+            except RuntimeError as error:
+                if len(failure_examples) < 4:
+                    failure_examples.append(str(error))
+
+        if not ik_feasible:
+            details = "; ".join(failure_examples)
+            raise RuntimeError(
+                f"tracking PREGRASP全部{len(candidates)}个候选均无IK解"
+                + (f"; 示例: {details}" if details else "")
+            )
+
+        ik_feasible.sort(key=lambda item: item["base_score"])
+        path_failure_examples = []
+        plan_attempts = 0
+        for candidate in ik_feasible[:TRACKING_MAX_MOVEIT_PLANS]:
+            plan_attempts += 1
+            try:
+                plan = self.plan_to_pregrasp(
+                    start_state,
+                    candidate["pregrasp_joints"],
+                )
+                plan_duration, maximum_step, maximum_velocity = (
+                    self.validate_trajectory(
+                        plan,
+                        start_positions,
+                        candidate["pregrasp_joints"],
+                    )
+                )
+                candidate.update(
+                    {
+                        "pregrasp_plan": plan,
+                        "plan_duration": plan_duration,
+                        "maximum_step": maximum_step,
+                        "maximum_velocity": maximum_velocity,
+                        "execution_pose": copy.deepcopy(
+                            candidate["pregrasp_pose"]
+                        ),
+                        "ik_attempts": ik_attempts,
+                        "ik_feasible_count": len(ik_feasible),
+                        "plan_attempts": plan_attempts,
+                    }
+                )
+                return candidate
+            except RuntimeError as error:
+                if len(path_failure_examples) < 4:
+                    path_failure_examples.append(
+                        f"{candidate['label']}: {error}"
+                    )
+
+        details = "; ".join(path_failure_examples)
+        raise RuntimeError(
+            f"tracking PREGRASP的{len(ik_feasible[:TRACKING_MAX_MOVEIT_PLANS])}个IK候选均无可执行路径"
+            + (f"; 示例: {details}" if details else "")
+        )
+
     def follow_tracking_target(self, *, execute=False, args=None):
         """Follow live PREGRASP with bounded receding-horizon replanning."""
 
@@ -333,7 +504,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         if not math.isfinite(observation_timeout) or observation_timeout <= 0.0:
             raise RuntimeError("observation_timeout must be positive")
 
-        planned_pose = None
+        planned_observation_pose = None
         planned_joints = None
         updates = 0
         deadline = time.monotonic() + timeout
@@ -342,26 +513,67 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             self.prepare_command_publisher()
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.05)
-            pose = copy.deepcopy(self.pregrasp_pose)
-            age = self.latest_pose_age()
-            if pose is None or age > observation_timeout:
+            pose_triplet = self.tracking_pose_snapshot()
+            age = self.latest_tracking_pose_age()
+            if pose_triplet is None or age > observation_timeout:
                 continue
-            drift = self.pose_distance(pose, planned_pose)
-            if planned_pose is None or drift > replan_threshold:
-                self.emit_event("PLAN_STARTED", details={"tracking_update": updates})
+            observation_pose = pose_triplet[0]
+            drift = self.tracking_observation_drift(
+                observation_pose,
+                planned_observation_pose,
+            )
+            if planned_observation_pose is None or drift > replan_threshold:
+                updates += 1
+                tracking_update = updates
+                self.emit_event(
+                    "PLAN_STARTED",
+                    details={
+                        "phase": "tracking_pregrasp",
+                        "tracking_update": tracking_update,
+                        "observation_drift_m": drift,
+                    },
+                )
                 try:
                     state = self.current_robot_state()
                     positions = self.current_positions()
-                    ik_state, joints = self.compute_ik_for_pose(
-                        "TRACKING_PREGRASP", pose, state, ik_timeout=0.35
+                    selected = self.select_tracking_pregrasp_candidate(
+                        pose_triplet,
+                        state,
+                        positions,
                     )
-                    plan = self.plan_to_pregrasp(state, joints)
-                    plan_duration, maximum_step, maximum_velocity = self.validate_trajectory(
-                        plan, positions, joints
+                    # The search itself may take long enough for a moving
+                    # target to invalidate the result. Re-read the nominal
+                    # observation before sending any command.
+                    rclpy.spin_once(self, timeout_sec=0.0)
+                    latest_triplet = self.tracking_pose_snapshot()
+                    latest_age = self.latest_tracking_pose_age()
+                    latest_observation = (
+                        latest_triplet[0] if latest_triplet is not None else None
                     )
+                    observation_drift = self.tracking_observation_drift(
+                        latest_observation,
+                        selected["observation_pose"],
+                    )
+                    if (
+                        latest_triplet is None
+                        or latest_age > observation_timeout
+                        or observation_drift > replan_threshold
+                    ):
+                        self.emit_event(
+                            "PLAN_FAILED",
+                            details={
+                                "phase": "tracking_pregrasp",
+                                "tracking_update": tracking_update,
+                                "reason": "stale_observation_before_execution",
+                                "observation_drift_m": observation_drift,
+                            },
+                        )
+                        if updates >= max_updates:
+                            break
+                        continue
                     if execute:
                         self.execute_trajectory(
-                            plan,
+                            selected["pregrasp_plan"],
                             positions,
                             positions[6],
                             args.slowdown,
@@ -369,32 +581,52 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                             args.effort,
                             args.tracking_limit,
                         )
-                    planned_pose = pose
-                    planned_joints = list(joints)
-                    updates += 1
+                    planned_observation_pose = copy.deepcopy(
+                        selected["observation_pose"]
+                    )
+                    planned_joints = list(selected["pregrasp_joints"])
                     self.emit_event(
                         "PLAN_SUCCEEDED",
                         details={
-                            "tracking_update": updates,
-                            "plan_duration_s": plan_duration,
-                            "maximum_step_rad": maximum_step,
-                            "maximum_velocity_rad_s": maximum_velocity,
+                            "phase": "tracking_pregrasp",
+                            "tracking_update": tracking_update,
+                            "candidate_label": selected["label"],
+                            "clearance_m": selected["clearance"],
+                            "joint_margin": selected["joint_margin"],
+                            "observation_drift_m": observation_drift,
+                            "plan_duration_s": selected["plan_duration"],
+                            "maximum_step_rad": selected["maximum_step"],
+                            "maximum_velocity_rad_s": selected[
+                                "maximum_velocity"
+                            ],
+                            "ik_feasible_count": selected[
+                                "ik_feasible_count"
+                            ],
+                            "plan_attempts": selected["plan_attempts"],
                         },
                     )
                 except Exception as error:
                     self.emit_event(
                         "PLAN_FAILED",
-                        details={"tracking_update": updates, "reason": str(error)},
+                        details={
+                            "phase": "tracking_pregrasp",
+                            "tracking_update": tracking_update,
+                            "reason": str(error),
+                        },
                     )
                     raise
-            if planned_pose is None or planned_joints is None:
+            if planned_observation_pose is None or planned_joints is None:
                 continue
-            latest_drift = self.pose_distance(self.pregrasp_pose, planned_pose)
+            latest_drift = self.tracking_observation_drift(
+                self.pregrasp_pose,
+                planned_observation_pose,
+            )
             if not execute:
                 # Plan-only tracking validates one fresh latest-target plan;
                 # it must not pretend that the arm mechanically followed it.
                 if (
-                    self.latest_pose_age() <= min(0.25, observation_timeout)
+                    self.latest_tracking_pose_age()
+                    <= min(0.25, observation_timeout)
                     and latest_drift <= commit_tolerance
                 ):
                     self.auto_latch_target()
@@ -408,7 +640,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                 for actual, planned in zip(current[:6], planned_joints)
             )
             if (
-                self.latest_pose_age() <= min(0.25, observation_timeout)
+                self.latest_tracking_pose_age() <= min(0.25, observation_timeout)
                 and latest_drift <= commit_tolerance
                 and joint_error <= 0.030
             ):
@@ -487,13 +719,14 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         pose.pose.orientation.z = float(quaternion[2])
         pose.pose.orientation.w = float(quaternion[3])
 
-    def orientation_candidates(self):
+    def orientation_candidates(self, grasp_pose=None):
+        grasp_pose = self.grasp_pose if grasp_pose is None else grasp_pose
         nominal = self.normalize_quaternion(
             (
-                self.grasp_pose.pose.orientation.x,
-                self.grasp_pose.pose.orientation.y,
-                self.grasp_pose.pose.orientation.z,
-                self.grasp_pose.pose.orientation.w,
+                grasp_pose.pose.orientation.x,
+                grasp_pose.pose.orientation.y,
+                grasp_pose.pose.orientation.z,
+                grasp_pose.pose.orientation.w,
             )
         )
         candidates = [("EXACT_VERTICAL", nominal)]
@@ -518,8 +751,8 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                 )
             )
 
-        target_x = float(self.grasp_pose.pose.position.x)
-        target_y = float(self.grasp_pose.pose.position.y)
+        target_x = float(grasp_pose.pose.position.x)
+        target_y = float(grasp_pose.pose.position.y)
         target_angle = math.atan2(target_y, target_x)
         radial_axis = (
             math.cos(target_angle),
@@ -589,16 +822,21 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             unique.append((label, quaternion))
         return nominal, unique
 
-    def grasp_pose_candidates(self):
-        nominal, orientations = self.orientation_candidates()
+    def grasp_pose_candidates_from_poses(
+        self,
+        pregrasp_pose,
+        grasp_pose,
+        lift_pose,
+    ):
+        nominal, orientations = self.orientation_candidates(grasp_pose)
         # The preview pose is exact top-down, so its x/y are the corrected
         # desired TCP/contact-center location and its z is contact_z plus the
         # modeled tool offset.  For every tilted orientation, recompute link6
         # from that same TCP target: p_link6 = p_tcp - R*z_tool*tool_offset.
-        contact_x = float(self.grasp_pose.pose.position.x)
-        contact_y = float(self.grasp_pose.pose.position.y)
+        contact_x = float(grasp_pose.pose.position.x)
+        contact_y = float(grasp_pose.pose.position.y)
         contact_z = (
-            float(self.grasp_pose.pose.position.z) - self.tool_offset
+            float(grasp_pose.pose.position.z) - self.tool_offset
         )
         if (
             self.target_class == "cylinder"
@@ -630,9 +868,9 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                     jaw_axis[0] / planar_norm,
                 )
                 for chord_offset in chord_offsets:
-                    pregrasp = copy.deepcopy(self.pregrasp_pose)
-                    grasp = copy.deepcopy(self.grasp_pose)
-                    lift = copy.deepcopy(self.lift_pose)
+                    pregrasp = copy.deepcopy(pregrasp_pose)
+                    grasp = copy.deepcopy(grasp_pose)
+                    lift = copy.deepcopy(lift_pose)
                     tool_axis = self.rotated_tool_axis(quaternion)
                     candidate_contact_x = (
                         contact_x + chord_offset * chord_axis[0]
@@ -683,6 +921,13 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                         }
                     )
         return candidates
+
+    def grasp_pose_candidates(self):
+        return self.grasp_pose_candidates_from_poses(
+            self.pregrasp_pose,
+            self.grasp_pose,
+            self.lift_pose,
+        )
 
     @staticmethod
     def rotated_tool_axis(quaternion):
@@ -1310,23 +1555,30 @@ def main(argv=None):
                 # Tracking needs MoveIt clients before its first receding-
                 # horizon PREGRASP plan.  The final commit is made only after
                 # the latest preview is fresh and mechanically reached.
-                node.wait_for_sequence_inputs()
+                _task_phase("readiness", node.wait_for_sequence_inputs)
                 node.wait_for_sequence_services()
                 node.spin_for(0.8)
                 node.apply_table()
-                node.follow_tracking_target(execute=args.execute, args=args)
+                _task_phase(
+                    "planning",
+                    node.follow_tracking_target,
+                    execute=args.execute,
+                    args=args,
+                )
             else:
                 node.auto_latch_target()
-        node.wait_for_sequence_inputs()
+        _task_phase("readiness", node.wait_for_sequence_inputs)
         node.wait_for_sequence_services()
         # Service discovery/planning setup can briefly leave the most recent
         # feedback older than the strict live-state threshold. Refresh a full
         # stable window immediately before validating the start state.
         node.spin_for(0.8)
-        node.validate_sequence_targets()
+        _task_phase("safety", node.validate_sequence_targets)
         # The sequence actively opens the empty gripper at the safe starting
         # pose, so it does not require the gripper to be pre-opened manually.
-        start_positions = node.validate_live_state(
+        start_positions = _task_phase(
+            "safety",
+            node.validate_live_state,
             require_open_gripper=False,
             allow_not_at_target=True,
         )
@@ -1334,7 +1586,9 @@ def main(argv=None):
         start_state = node.current_robot_state()
         node.emit_event("PLAN_STARTED", details={"phase": "final_candidate"})
         try:
-            selected = node.select_grasp_candidate(start_state, start_positions)
+            selected = _task_phase(
+                "planning", node.select_grasp_candidate, start_state, start_positions
+            )
         except Exception as error:
             node.emit_event("PLAN_FAILED", details={"phase": "final_candidate", "reason": str(error)})
             raise
@@ -1383,7 +1637,11 @@ def main(argv=None):
             print("PLAN-ONLY：没有创建/joint_states发布者，没有移动或抓取。")
             node.emit_event(
                 "TRIAL_FINISHED",
-                details={"execution_mode": "plan_only", "task_success": False},
+                details={
+                    "execution_mode": "plan_only",
+                    "task_success": False,
+                    "outcome": "plan_only",
+                },
             )
             terminal_emitted = True
             node.spin_for(0.2)
@@ -1400,7 +1658,7 @@ def main(argv=None):
         )
         drift = max(abs(a - b) for a, b in zip(refreshed[:6], start_positions[:6]))
         if drift > 0.02:
-            raise RuntimeError(f"倒计时期间机械臂移动了{drift:.4f}rad")
+            raise TrialTaskFailure("safety", f"倒计时期间机械臂移动了{drift:.4f}rad")
 
         node.prepare_command_publisher()
         preopen_target_m = args.preopen_opening_mm / 1000.0
@@ -1411,7 +1669,8 @@ def main(argv=None):
         )
         preopen_feedback = node.command_gripper(preopen_target_m, args)
         if preopen_feedback < preopen_target_m - 0.004:
-            raise RuntimeError(
+            raise TrialTaskFailure(
+                "safety",
                 "夹爪没有充分张开: "
                 f"目标{args.preopen_opening_mm:.1f}mm，"
                 f"反馈{preopen_feedback * 1000.0:.1f}mm"
@@ -1422,7 +1681,8 @@ def main(argv=None):
             for actual, previous in zip(after_open[:6], refreshed[:6])
         )
         if open_arm_drift > 0.020:
-            raise RuntimeError(
+            raise TrialTaskFailure(
+                "safety",
                 "高位张开夹爪期间机械臂发生偏移: "
                 f"{open_arm_drift:.4f}rad"
             )
@@ -1442,7 +1702,8 @@ def main(argv=None):
         preopen_feedback = node.current_positions()[6]
         print(f"到达高位时夹爪开口：{preopen_feedback * 1000.0:.1f} mm")
         if preopen_feedback < preopen_target_m - 0.004:
-            raise RuntimeError(
+            raise TrialTaskFailure(
+                "safety",
                 "夹爪没有充分张开: "
                 f"目标{args.preopen_opening_mm:.1f}mm，"
                 f"反馈{preopen_feedback * 1000.0:.1f}mm"
@@ -1454,7 +1715,9 @@ def main(argv=None):
             preopen_target_m,
             args,
         )
-        node.validate_checkpoint(
+        _task_phase(
+            "safety",
+            node.validate_checkpoint,
             "PREGRASP",
             active_pregrasp_pose,
             active_pregrasp_joints,
@@ -1487,11 +1750,15 @@ def main(argv=None):
             approach_trajectory = (
                 approach_to_execute.solution.joint_trajectory
             )
-            node.validate_cartesian_trajectory(
+            _task_phase(
+                "planning",
+                node.validate_cartesian_trajectory,
                 "PREVALIDATED_APPROACH_PAIR",
                 approach_trajectory,
             )
-            node.validate_cartesian_trajectory(
+            _task_phase(
+                "planning",
+                node.validate_cartesian_trajectory,
                 "PREVALIDATED_LIFT_PAIR",
                 paired_lift.solution.joint_trajectory,
             )
@@ -1508,7 +1775,8 @@ def main(argv=None):
                 )
             )
             if pair_start_error > 0.020:
-                raise RuntimeError(
+                raise TrialTaskFailure(
+                    "planning",
                     "无法从真实PREGRASP获得配对下降/抬升路径，"
                     f"且当前关节与预验证起点相差"
                     f"{pair_start_error:.4f}rad。原因: {paired_replan_error}"
@@ -1537,7 +1805,9 @@ def main(argv=None):
             preopen_target_m,
             args,
         )
-        node.validate_checkpoint(
+        _task_phase(
+            "safety",
+            node.validate_checkpoint,
             "GRASP",
             active_grasp_pose,
             grasp_checkpoint_joints,
@@ -1566,7 +1836,8 @@ def main(argv=None):
             "尚未由接触力确认物理夹持"
         )
         if jaw_blocked_margin_mm < args.minimum_grip_margin_mm:
-            raise RuntimeError(
+            raise TrialTaskFailure(
+                "grasp",
                 f"未获得{args.target_class}的接触阻挡证据：余量仅"
                 f"{jaw_blocked_margin_mm:.1f}mm；拒绝抬升"
             )
@@ -1587,7 +1858,9 @@ def main(argv=None):
             close_target_m,
             args,
         )
-        node.validate_checkpoint(
+        _task_phase(
+            "safety",
+            node.validate_checkpoint,
             "GRASP_AFTER_CLOSE",
             active_grasp_pose,
             grasp_checkpoint_joints,
@@ -1612,10 +1885,13 @@ def main(argv=None):
             validated_lift = paired_lift
             trajectory = validated_lift.solution.joint_trajectory
             if not trajectory.points:
-                raise RuntimeError(
+                raise TrialTaskFailure(
+                    "planning",
                     f"实时抬升失败且预验证轨迹为空: {replan_error}"
                 ) from replan_error
-            node.validate_cartesian_trajectory(
+            _task_phase(
+                "planning",
+                node.validate_cartesian_trajectory,
                 "GRASP_TO_LIFT_PREVALIDATED_FALLBACK",
                 trajectory,
             )
@@ -1628,7 +1904,8 @@ def main(argv=None):
                 for actual, planned in zip(actual_arm, validated_start)
             )
             if fallback_start_error > 0.020:
-                raise RuntimeError(
+                raise TrialTaskFailure(
+                    "planning",
                     "实时抬升路径失败，且当前关节与预验证"
                     f"抬升起点相差{fallback_start_error:.4f}rad；"
                     f"拒绝复用轨迹。原因: {replan_error}"
@@ -1653,7 +1930,11 @@ def main(argv=None):
         node.emit_event("EXECUTION_FINISHED", details={"target_class": args.target_class})
         node.emit_event(
             "TRIAL_FINISHED",
-            details={"execution_mode": "execute"},
+            details={
+                "execution_mode": "execute",
+                "task_success": True,
+                "outcome": "success",
+            },
         )
         terminal_emitted = True
         node.spin_for(0.2)
@@ -1669,10 +1950,29 @@ def main(argv=None):
         print("已取消并尝试保持当前位置；异常时使用硬件急停。")
         node.emit_event(
             "TRIAL_FAILED",
-            details={"reason": "keyboard_interrupt", "execution_mode": "execute"},
+            details={
+                "reason": "keyboard_interrupt",
+                "execution_mode": "execute",
+                "failure_class": "infrastructure",
+                "failure_stage": "interrupted",
+            },
         )
         node.spin_for(0.2)
         return 130
+    except TrialTaskFailure as error:
+        if node.execution_backend.can_hold and node.latest_joint_state is not None:
+            current = node.current_positions()
+            node.publish_hold(current[6], args.speed_percent, args.effort)
+        print(f"任务失败，保留本次trial用于统计：{error}", file=sys.stderr)
+        details = {
+            "execution_mode": "execute" if args.execute else "plan_only",
+            "task_success": False,
+        }
+        details.update(task_failure_details(error))
+        node.emit_event("TRIAL_FINISHED", details=details)
+        terminal_emitted = True
+        node.spin_for(0.2)
+        return 0
     except Exception as error:
         if node.execution_backend.can_hold and node.latest_joint_state is not None:
             current = node.current_positions()
@@ -1680,7 +1980,12 @@ def main(argv=None):
         print(f"安全拒绝/中止：{error}", file=sys.stderr)
         node.emit_event(
             "TRIAL_FAILED",
-            details={"reason": str(error), "error_type": type(error).__name__},
+            details={
+                "reason": str(error),
+                "error_type": type(error).__name__,
+                "failure_class": "infrastructure",
+                "failure_stage": "runtime",
+            },
         )
         node.spin_for(0.2)
         return 1

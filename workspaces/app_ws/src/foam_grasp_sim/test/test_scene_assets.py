@@ -276,6 +276,26 @@ class SceneAssetTest(unittest.TestCase):
         self.assertIn("plan_sequence", bringup)
         self.assertNotIn("TimerAction(period=10.0, actions=[plan_sequence, execute_sequence])", bringup)
 
+    def test_readiness_success_is_the_only_scene_start_path(self):
+        bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
+        self.assertIn('executable="simulation_readiness"', bringup)
+        self.assertIn('"simulation_readiness_timeout_s"', bringup)
+        self.assertIn('default_value="30.0"', bringup)
+        self.assertIn("target_action=simulation_readiness", bringup)
+        self.assertIn("Shutdown(", bringup)
+        self.assertIn("returncode != 0", bringup)
+        self.assertIn("return [*target_spawns]", bringup)
+        self.assertNotIn("scene = TimerAction(", bringup)
+        self.assertNotIn("TimerAction(period=1.0, actions=[plan_sequence, execute_sequence])", bringup)
+        failure_path = (
+            bringup.split("def _after_readiness", 1)[1]
+            .split("def _after_target_spawn", 1)[0]
+            .split("if event.returncode != 0:", 1)[1]
+            .split("return [*target_spawns]", 1)[0]
+        )
+        self.assertIn("Shutdown", failure_path)
+        self.assertNotIn("target_spawns", failure_path)
+
     def test_physics_qualification_has_a_configurable_post_close_hold(self):
         bringup = (PACKAGE_ROOT / "launch" / "sim_bringup.launch.py").read_text()
         sequence = (PACKAGE_ROOT.parent / "foam_grasp" / "foam_grasp" / "foam_cube_grasp_sequence.py").read_text()
@@ -378,6 +398,23 @@ class SceneAssetTest(unittest.TestCase):
         launch = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
         self.assertIn('"gazebo_executable"', launch)
         self.assertIn('default_value="gzserver"', launch)
+
+    def test_controller_spawners_use_explicit_startup_service_timeouts(self):
+        launch = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()
+        for option, value in (
+            ("--controller-manager-timeout", "60.0"),
+            ("--service-call-timeout", "30.0"),
+            ("--switch-timeout", "30.0"),
+        ):
+            self.assertIn(f'"{option}"', launch)
+            self.assertIn(f'"{value}"', launch)
+
+    def test_readiness_shutdown_guard_is_idempotent(self):
+        readiness = (
+            PACKAGE_ROOT / "foam_grasp_sim" / "simulation_readiness_node.py"
+        ).read_text()
+        self.assertIn("if rclpy.ok():", readiness)
+        self.assertIn("rclpy.shutdown()", readiness)
 
     def test_piper_robot_description_is_explicitly_a_string_parameter(self):
         launch = (PACKAGE_ROOT / "launch" / "piper_sim.launch.py").read_text()

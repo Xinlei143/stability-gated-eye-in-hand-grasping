@@ -147,9 +147,14 @@ artifacts. `--rerun-failed --campaign-id <id>` uses deterministic
 
 Terminal events are distinct from task events:
 
-- `TRIAL_FINISHED` means the program trial completed normally. In plan-only
-  mode it follows `PLAN_SUCCEEDED` while `task_success` remains false.
-- `TRIAL_FAILED` records a program, planning, safety, or timeout failure.
+- `TRIAL_FINISHED` means the program trial completed with a valid result. In
+  plan-only mode it follows `PLAN_SUCCEEDED` while `task_success` remains
+  false. Expected readiness, planning, grasp, and safety refusals also emit
+  `TRIAL_FINISHED` with `outcome=task_failure`, so they remain in the
+  statistical denominator.
+- `TRIAL_FAILED` is reserved for infrastructure failures such as missing
+  services, process termination, timeout, interruption, or incomplete/corrupt
+  artifacts. These trials are excluded and may be rerun.
 - `TASK_FINISHED` still means the simulated/real mechanical grasp and lift
   succeeded; it is never synthesized from plan-only success.
 

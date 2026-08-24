@@ -186,6 +186,5 @@ class BenchmarkToolsTest(unittest.TestCase):
         self.assertEqual(result["trial_status"], "failed")
         self.assertFalse(result["trial_success"])
 
-
 if __name__ == "__main__":
     unittest.main()

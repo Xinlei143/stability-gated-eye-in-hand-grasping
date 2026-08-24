@@ -200,6 +200,19 @@ class MetricsAccumulator:
             else "failed" if terminal and terminal.get("event") == "TRIAL_FAILED"
             else "incomplete"
         )
+        terminal_details = dict(terminal.get("details") or {}) if terminal else {}
+        if trial_status == "finished":
+            terminal_outcome = str(terminal_details.get("outcome", ""))
+            if task_success:
+                outcome = "success"
+            elif terminal_outcome in {"plan_only", "task_failure"}:
+                outcome = terminal_outcome
+            else:
+                outcome = "task_failure"
+        elif trial_status == "failed":
+            outcome = "infrastructure_failure"
+        else:
+            outcome = "incomplete"
         result = {
             "tracking_rms_error_m": (
                 math.sqrt(sum(error * error for error in tracking_errors) / len(tracking_errors))
@@ -217,6 +230,10 @@ class MetricsAccumulator:
             "planning_success": bool(planning_success),
             "execution_completed": bool(execution_completed),
             "task_success": bool(task_success),
+            "outcome": outcome,
+            "failure_class": str(terminal_details.get("failure_class", "")),
+            "failure_stage": str(terminal_details.get("failure_stage", "")),
+            "failure_reason": str(terminal_details.get("reason", "")),
             "physical_grasp_success": bool(physical_success),
             "lift_height_m": lift_height_m,
             "grasp_hold_s": grasp_hold_s,

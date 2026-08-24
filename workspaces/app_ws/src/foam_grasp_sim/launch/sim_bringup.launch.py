@@ -12,7 +12,6 @@ from launch.actions import (
     OpaqueFunction,
     RegisterEventHandler,
     Shutdown,
-    TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
@@ -117,6 +116,9 @@ def generate_launch_description():
     grasp_stabilization_mode = LaunchConfiguration("grasp_stabilization_mode")
     record_contact_diagnostics = LaunchConfiguration("record_contact_diagnostics")
     contact_diagnostics_output = LaunchConfiguration("contact_diagnostics_output")
+    simulation_readiness_timeout_s = LaunchConfiguration(
+        "simulation_readiness_timeout_s"
+    )
 
     physics_xacro = str(Path(package_share) / "urdf" / "piper_eye_in_hand_physics.xacro")
     grasp_fix_xacro = str(Path(package_share) / "urdf" / "piper_eye_in_hand_grasp_fix.xacro")
@@ -385,6 +387,14 @@ def generate_launch_description():
         condition=IfCondition(record_contact_diagnostics),
     )
 
+    simulation_readiness = Node(
+        package="foam_grasp_sim",
+        executable="simulation_readiness",
+        name="foam_simulation_readiness",
+        output="screen",
+        arguments=["--timeout-s", simulation_readiness_timeout_s],
+    )
+
     benchmark_logger = Node(
         package="foam_grasp_sim",
         executable="metrics_logger_node",
@@ -425,10 +435,19 @@ def generate_launch_description():
     # The table is built into the world as a static model. Only the selected
     # target uses the Gazebo factory, avoiding a known static-model spawn queue
     # timeout while keeping target insertion serialized before the pipeline.
-    scene = TimerAction(
-        period=LaunchConfiguration("target_spawn_delay_s"),
-        actions=[*target_spawns],
-    )
+    # The readiness process below is the sole gate before this action list.
+    def _after_readiness(event, context):
+        del context
+        if event.returncode != 0:
+            return [
+                Shutdown(
+                    reason=(
+                        "simulation readiness failed; refusing to start target "
+                        f"scene and grasp pipeline (returncode={event.returncode})"
+                    )
+                )
+            ]
+        return [*target_spawns]
 
     def _after_target_spawn(event, context):
         del context
@@ -447,7 +466,11 @@ def generate_launch_description():
             simulated_perception,
             method_policy,
             benchmark_logger,
-            TimerAction(period=1.0, actions=[plan_sequence, execute_sequence]),
+            grasp_pose_preview,
+            grasp_assist,
+            contact_diagnostics,
+            plan_sequence,
+            execute_sequence,
         ]
 
     pipeline_after_target_handlers = [
@@ -536,10 +559,14 @@ def generate_launch_description():
                 "target_spawn_delay_s",
                 default_value="12.0",
                 description=(
-                    "Delay before inserting the target after Gazebo starts; "
-                    "keeps the factory request serialized without letting the "
-                    "uncommanded arm fall for the full startup window"
+                    "Deprecated compatibility argument; startup is gated by "
+                    "simulation readiness rather than a fixed delay"
                 ),
+            ),
+            DeclareLaunchArgument(
+                "simulation_readiness_timeout_s",
+                default_value="30.0",
+                description="Wall-clock timeout for controller and action readiness",
             ),
             DeclareLaunchArgument(
                 "method",
@@ -657,10 +684,13 @@ def generate_launch_description():
             OpaqueFunction(function=_validate_stabilization_configuration),
             piper_launch,
             moveit_launch,
-            grasp_pose_preview,
-            scene,
+            simulation_readiness,
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=simulation_readiness,
+                    on_exit=_after_readiness,
+                )
+            ),
             *pipeline_after_target_handlers,
-            grasp_assist,
-            contact_diagnostics,
         ]
     )

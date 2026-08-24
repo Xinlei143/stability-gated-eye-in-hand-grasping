@@ -11,6 +11,7 @@
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>control_msgs</exec_depend>
   <exec_depend>controller_manager</exec_depend>
+  <exec_depend>controller_manager_msgs</exec_depend>
   <exec_depend>foam_grasp</exec_depend>
   <exec_depend>gazebo_plugins</exec_depend>
   <exec_depend>gazebo_msgs</exec_depend>
