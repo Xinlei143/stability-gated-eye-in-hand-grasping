@@ -9,8 +9,13 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, TimerAction
-from launch.conditions import IfCondition
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    RegisterEventHandler,
+    Shutdown,
+)
+from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
@@ -30,6 +35,7 @@ def generate_launch_description():
             "target_model": LaunchConfiguration("target_model"),
             "run_grasp_pipeline": LaunchConfiguration("run_grasp_pipeline"),
             "execute_motion": LaunchConfiguration("execute_motion"),
+            "prepare_observation_pose": "true",
             "method": LaunchConfiguration("method"),
             "trajectory": LaunchConfiguration("trajectory"),
             "perception_source": "rgbd",
@@ -81,24 +87,41 @@ def generate_launch_description():
             }
         ],
     )
-    move_to_observe = Node(
-        package="foam_grasp",
-        executable="move_to_observe",
-        name="foam_move_to_observe_sim",
-        output="screen",
-        arguments=[
-            "--execution-backend",
-            "simulation",
-            "--execute",
-            "--confirm",
-            "AUTO_MOVE_TO_OBSERVE",
-            "--countdown-seconds",
-            "0",
-        ],
-        condition=IfCondition(
-            LaunchConfiguration("observe_before_rgbd")
+
+    def _shutdown_on_rgbd_exit(node_name):
+        def on_exit(event, context):
+            del context
+            return [
+                Shutdown(
+                    reason=(
+                        f"{node_name} infrastructure failure; shutting down "
+                        f"RGB-D pipeline (returncode={event.returncode})"
+                    )
+                )
+            ]
+
+        return on_exit
+
+    rgbd_supervision_handlers = [
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=segmentation,
+                on_exit=_shutdown_on_rgbd_exit("segmentation_node"),
+            )
         ),
-    )
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=depth_fusion,
+                on_exit=_shutdown_on_rgbd_exit("depth_fusion_node"),
+            )
+        ),
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=camera_to_base,
+                on_exit=_shutdown_on_rgbd_exit("camera_to_base_node"),
+            )
+        ),
+    ]
 
     declarations = [
         DeclareLaunchArgument("checkpoint", description="Absolute path to best_model.pth"),
@@ -108,7 +131,6 @@ def generate_launch_description():
         DeclareLaunchArgument("target_model", default_value="cube"),
         DeclareLaunchArgument("run_grasp_pipeline", default_value="true"),
         DeclareLaunchArgument("execute_motion", default_value="false"),
-        DeclareLaunchArgument("observe_before_rgbd", default_value="true"),
         DeclareLaunchArgument("method", default_value="gated"),
         DeclareLaunchArgument("trajectory", default_value="static"),
         DeclareLaunchArgument("record_benchmark", default_value="true"),
@@ -127,7 +149,7 @@ def generate_launch_description():
         declarations
         + [
             sim_launch,
-            TimerAction(period=5.0, actions=[move_to_observe]),
+            *rgbd_supervision_handlers,
             segmentation,
             depth_fusion,
             camera_to_base,

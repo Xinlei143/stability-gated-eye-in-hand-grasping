@@ -13,9 +13,18 @@ class FullPipelineLaunchTest(unittest.TestCase):
         self.assertIn('executable="camera_to_base_node"', source)
         self.assertIn('"transform_source": "tf"', source)
         self.assertIn("piper_eye_in_hand_physics.xacro", source)
-        self.assertIn('executable="move_to_observe"', source)
-        self.assertIn('AUTO_MOVE_TO_OBSERVE', source)
-        self.assertIn("TimerAction(period=5.0, actions=[move_to_observe])", source)
+        self.assertIn('"prepare_observation_pose": "true"', source)
+        self.assertNotIn('executable="move_to_observe"', source)
+        self.assertNotIn("TimerAction", source)
+
+    def test_supervises_each_rgbd_infrastructure_process(self):
+        source = (Path(__file__).parents[1] / "launch" / "full_pipeline.launch.py").read_text(encoding="utf-8")
+        self.assertIn("RegisterEventHandler", source)
+        self.assertIn("OnProcessExit", source)
+        self.assertIn("target_action=segmentation", source)
+        self.assertIn("target_action=depth_fusion", source)
+        self.assertIn("target_action=camera_to_base", source)
+        self.assertIn("infrastructure failure", source)
 
     def test_moveit_simulation_does_not_enable_unavailable_kinect_updaters(self):
         source = (Path(__file__).parents[1] / "launch" / "sim_moveit.launch.py").read_text(encoding="utf-8")
