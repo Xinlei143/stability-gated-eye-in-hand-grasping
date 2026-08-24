@@ -57,6 +57,8 @@ YAW_CANDIDATES_DEGREES = (-30.0, -15.0, 15.0, 30.0)
 RADIAL_OUTWARD_TILT_DEGREES = (5.0, 10.0, 15.0, 20.0)
 RADIAL_INWARD_TILT_DEGREES = (5.0, 10.0)
 TANGENTIAL_TILT_DEGREES = (-10.0, -5.0, 5.0, 10.0)
+TRACKING_MAX_IK_FEASIBLE = 8
+TRACKING_MAX_MOVEIT_PLANS = 4
 
 
 def _task_phase(stage, callback, *args, **kwargs):
@@ -329,6 +331,160 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             return math.inf
         return max(0.0, time.monotonic() - self.pregrasp_received_at)
 
+    def tracking_pose_snapshot(self):
+        """Return a coherent PREGRASP/GRASP/LIFT observation triplet."""
+
+        poses = (
+            self.pregrasp_pose,
+            self.grasp_pose,
+            self.lift_pose,
+        )
+        if any(pose is None for pose in poses):
+            return None
+        stamps = [
+            (
+                int(pose.header.stamp.sec),
+                int(pose.header.stamp.nanosec),
+            )
+            for pose in poses
+        ]
+        if len(set(stamps)) != 1:
+            return None
+        return tuple(copy.deepcopy(pose) for pose in poses)
+
+    def latest_tracking_pose_age(self):
+        received_at = (
+            self.pregrasp_received_at,
+            self.grasp_received_at,
+            self.lift_received_at,
+        )
+        if any(value <= 0.0 for value in received_at):
+            return math.inf
+        return max(0.0, time.monotonic() - min(received_at))
+
+    @staticmethod
+    def tracking_observation_drift(latest_observation, planned_observation):
+        return FoamCubeGraspSequence.pose_distance(
+            latest_observation,
+            planned_observation,
+        )
+
+    def select_tracking_pregrasp_candidate(
+        self,
+        pose_triplet,
+        start_state,
+        start_positions,
+    ):
+        """Select a bounded, formal-candidate PREGRASP tracking plan."""
+
+        pregrasp_pose, grasp_pose, lift_pose = (
+            copy.deepcopy(pose) for pose in pose_triplet
+        )
+        candidates = self.grasp_pose_candidates_from_poses(
+            pregrasp_pose,
+            grasp_pose,
+            lift_pose,
+        )
+        ik_feasible = []
+        failure_examples = []
+        ik_attempts = 0
+        for candidate in candidates:
+            ik_attempts += 1
+            try:
+                pregrasp_state, pregrasp_joints = self.compute_ik_for_pose(
+                    (
+                        f"{candidate['label']}/"
+                        f"{candidate['clearance'] * 1000.0:.0f}mm "
+                        "TRACKING_PREGRASP"
+                    ),
+                    candidate["pregrasp_pose"],
+                    start_state,
+                    ik_timeout=0.35,
+                )
+                joint_margin = self.normalized_joint_margin(pregrasp_joints)
+                start_travel = sum(
+                    abs(goal - start)
+                    for goal, start in zip(
+                        pregrasp_joints,
+                        start_positions[:6],
+                    )
+                )
+                candidate.update(
+                    {
+                        "pregrasp_state": pregrasp_state,
+                        "pregrasp_joints": pregrasp_joints,
+                        "joint_margin": joint_margin,
+                        "base_score": (
+                            1.5 * candidate["orientation_error"]
+                            + 0.20 * start_travel
+                            + 8.0 * (
+                                CLEARANCE_CANDIDATES[0]
+                                - candidate["clearance"]
+                            )
+                            - 3.0 * joint_margin
+                        ),
+                        "observation_pose": copy.deepcopy(pregrasp_pose),
+                        "ik_attempts": ik_attempts,
+                    }
+                )
+                ik_feasible.append(candidate)
+                if len(ik_feasible) >= TRACKING_MAX_IK_FEASIBLE:
+                    break
+            except RuntimeError as error:
+                if len(failure_examples) < 4:
+                    failure_examples.append(str(error))
+
+        if not ik_feasible:
+            details = "; ".join(failure_examples)
+            raise RuntimeError(
+                f"tracking PREGRASP全部{len(candidates)}个候选均无IK解"
+                + (f"; 示例: {details}" if details else "")
+            )
+
+        ik_feasible.sort(key=lambda item: item["base_score"])
+        path_failure_examples = []
+        plan_attempts = 0
+        for candidate in ik_feasible[:TRACKING_MAX_MOVEIT_PLANS]:
+            plan_attempts += 1
+            try:
+                plan = self.plan_to_pregrasp(
+                    start_state,
+                    candidate["pregrasp_joints"],
+                )
+                plan_duration, maximum_step, maximum_velocity = (
+                    self.validate_trajectory(
+                        plan,
+                        start_positions,
+                        candidate["pregrasp_joints"],
+                    )
+                )
+                candidate.update(
+                    {
+                        "pregrasp_plan": plan,
+                        "plan_duration": plan_duration,
+                        "maximum_step": maximum_step,
+                        "maximum_velocity": maximum_velocity,
+                        "execution_pose": copy.deepcopy(
+                            candidate["pregrasp_pose"]
+                        ),
+                        "ik_attempts": ik_attempts,
+                        "ik_feasible_count": len(ik_feasible),
+                        "plan_attempts": plan_attempts,
+                    }
+                )
+                return candidate
+            except RuntimeError as error:
+                if len(path_failure_examples) < 4:
+                    path_failure_examples.append(
+                        f"{candidate['label']}: {error}"
+                    )
+
+        details = "; ".join(path_failure_examples)
+        raise RuntimeError(
+            f"tracking PREGRASP的{len(ik_feasible[:TRACKING_MAX_MOVEIT_PLANS])}个IK候选均无可执行路径"
+            + (f"; 示例: {details}" if details else "")
+        )
+
     def follow_tracking_target(self, *, execute=False, args=None):
         """Follow live PREGRASP with bounded receding-horizon replanning."""
 
@@ -348,7 +504,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         if not math.isfinite(observation_timeout) or observation_timeout <= 0.0:
             raise RuntimeError("observation_timeout must be positive")
 
-        planned_pose = None
+        planned_observation_pose = None
         planned_joints = None
         updates = 0
         deadline = time.monotonic() + timeout
@@ -357,26 +513,67 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             self.prepare_command_publisher()
         while rclpy.ok() and time.monotonic() < deadline:
             rclpy.spin_once(self, timeout_sec=0.05)
-            pose = copy.deepcopy(self.pregrasp_pose)
-            age = self.latest_pose_age()
-            if pose is None or age > observation_timeout:
+            pose_triplet = self.tracking_pose_snapshot()
+            age = self.latest_tracking_pose_age()
+            if pose_triplet is None or age > observation_timeout:
                 continue
-            drift = self.pose_distance(pose, planned_pose)
-            if planned_pose is None or drift > replan_threshold:
-                self.emit_event("PLAN_STARTED", details={"tracking_update": updates})
+            observation_pose = pose_triplet[0]
+            drift = self.tracking_observation_drift(
+                observation_pose,
+                planned_observation_pose,
+            )
+            if planned_observation_pose is None or drift > replan_threshold:
+                updates += 1
+                tracking_update = updates
+                self.emit_event(
+                    "PLAN_STARTED",
+                    details={
+                        "phase": "tracking_pregrasp",
+                        "tracking_update": tracking_update,
+                        "observation_drift_m": drift,
+                    },
+                )
                 try:
                     state = self.current_robot_state()
                     positions = self.current_positions()
-                    ik_state, joints = self.compute_ik_for_pose(
-                        "TRACKING_PREGRASP", pose, state, ik_timeout=0.35
+                    selected = self.select_tracking_pregrasp_candidate(
+                        pose_triplet,
+                        state,
+                        positions,
                     )
-                    plan = self.plan_to_pregrasp(state, joints)
-                    plan_duration, maximum_step, maximum_velocity = self.validate_trajectory(
-                        plan, positions, joints
+                    # The search itself may take long enough for a moving
+                    # target to invalidate the result. Re-read the nominal
+                    # observation before sending any command.
+                    rclpy.spin_once(self, timeout_sec=0.0)
+                    latest_triplet = self.tracking_pose_snapshot()
+                    latest_age = self.latest_tracking_pose_age()
+                    latest_observation = (
+                        latest_triplet[0] if latest_triplet is not None else None
                     )
+                    observation_drift = self.tracking_observation_drift(
+                        latest_observation,
+                        selected["observation_pose"],
+                    )
+                    if (
+                        latest_triplet is None
+                        or latest_age > observation_timeout
+                        or observation_drift > replan_threshold
+                    ):
+                        self.emit_event(
+                            "PLAN_FAILED",
+                            details={
+                                "phase": "tracking_pregrasp",
+                                "tracking_update": tracking_update,
+                                "reason": "stale_observation_before_execution",
+                                "observation_drift_m": observation_drift,
+                            },
+                        )
+                        if updates >= max_updates:
+                            break
+                        continue
                     if execute:
                         self.execute_trajectory(
-                            plan,
+                            selected["pregrasp_plan"],
                             positions,
                             positions[6],
                             args.slowdown,
@@ -384,32 +581,52 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                             args.effort,
                             args.tracking_limit,
                         )
-                    planned_pose = pose
-                    planned_joints = list(joints)
-                    updates += 1
+                    planned_observation_pose = copy.deepcopy(
+                        selected["observation_pose"]
+                    )
+                    planned_joints = list(selected["pregrasp_joints"])
                     self.emit_event(
                         "PLAN_SUCCEEDED",
                         details={
-                            "tracking_update": updates,
-                            "plan_duration_s": plan_duration,
-                            "maximum_step_rad": maximum_step,
-                            "maximum_velocity_rad_s": maximum_velocity,
+                            "phase": "tracking_pregrasp",
+                            "tracking_update": tracking_update,
+                            "candidate_label": selected["label"],
+                            "clearance_m": selected["clearance"],
+                            "joint_margin": selected["joint_margin"],
+                            "observation_drift_m": observation_drift,
+                            "plan_duration_s": selected["plan_duration"],
+                            "maximum_step_rad": selected["maximum_step"],
+                            "maximum_velocity_rad_s": selected[
+                                "maximum_velocity"
+                            ],
+                            "ik_feasible_count": selected[
+                                "ik_feasible_count"
+                            ],
+                            "plan_attempts": selected["plan_attempts"],
                         },
                     )
                 except Exception as error:
                     self.emit_event(
                         "PLAN_FAILED",
-                        details={"tracking_update": updates, "reason": str(error)},
+                        details={
+                            "phase": "tracking_pregrasp",
+                            "tracking_update": tracking_update,
+                            "reason": str(error),
+                        },
                     )
                     raise
-            if planned_pose is None or planned_joints is None:
+            if planned_observation_pose is None or planned_joints is None:
                 continue
-            latest_drift = self.pose_distance(self.pregrasp_pose, planned_pose)
+            latest_drift = self.tracking_observation_drift(
+                self.pregrasp_pose,
+                planned_observation_pose,
+            )
             if not execute:
                 # Plan-only tracking validates one fresh latest-target plan;
                 # it must not pretend that the arm mechanically followed it.
                 if (
-                    self.latest_pose_age() <= min(0.25, observation_timeout)
+                    self.latest_tracking_pose_age()
+                    <= min(0.25, observation_timeout)
                     and latest_drift <= commit_tolerance
                 ):
                     self.auto_latch_target()
@@ -423,7 +640,7 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                 for actual, planned in zip(current[:6], planned_joints)
             )
             if (
-                self.latest_pose_age() <= min(0.25, observation_timeout)
+                self.latest_tracking_pose_age() <= min(0.25, observation_timeout)
                 and latest_drift <= commit_tolerance
                 and joint_error <= 0.030
             ):
@@ -502,13 +719,14 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
         pose.pose.orientation.z = float(quaternion[2])
         pose.pose.orientation.w = float(quaternion[3])
 
-    def orientation_candidates(self):
+    def orientation_candidates(self, grasp_pose=None):
+        grasp_pose = self.grasp_pose if grasp_pose is None else grasp_pose
         nominal = self.normalize_quaternion(
             (
-                self.grasp_pose.pose.orientation.x,
-                self.grasp_pose.pose.orientation.y,
-                self.grasp_pose.pose.orientation.z,
-                self.grasp_pose.pose.orientation.w,
+                grasp_pose.pose.orientation.x,
+                grasp_pose.pose.orientation.y,
+                grasp_pose.pose.orientation.z,
+                grasp_pose.pose.orientation.w,
             )
         )
         candidates = [("EXACT_VERTICAL", nominal)]
@@ -533,8 +751,8 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                 )
             )
 
-        target_x = float(self.grasp_pose.pose.position.x)
-        target_y = float(self.grasp_pose.pose.position.y)
+        target_x = float(grasp_pose.pose.position.x)
+        target_y = float(grasp_pose.pose.position.y)
         target_angle = math.atan2(target_y, target_x)
         radial_axis = (
             math.cos(target_angle),
@@ -604,16 +822,21 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
             unique.append((label, quaternion))
         return nominal, unique
 
-    def grasp_pose_candidates(self):
-        nominal, orientations = self.orientation_candidates()
+    def grasp_pose_candidates_from_poses(
+        self,
+        pregrasp_pose,
+        grasp_pose,
+        lift_pose,
+    ):
+        nominal, orientations = self.orientation_candidates(grasp_pose)
         # The preview pose is exact top-down, so its x/y are the corrected
         # desired TCP/contact-center location and its z is contact_z plus the
         # modeled tool offset.  For every tilted orientation, recompute link6
         # from that same TCP target: p_link6 = p_tcp - R*z_tool*tool_offset.
-        contact_x = float(self.grasp_pose.pose.position.x)
-        contact_y = float(self.grasp_pose.pose.position.y)
+        contact_x = float(grasp_pose.pose.position.x)
+        contact_y = float(grasp_pose.pose.position.y)
         contact_z = (
-            float(self.grasp_pose.pose.position.z) - self.tool_offset
+            float(grasp_pose.pose.position.z) - self.tool_offset
         )
         if (
             self.target_class == "cylinder"
@@ -645,9 +868,9 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                     jaw_axis[0] / planar_norm,
                 )
                 for chord_offset in chord_offsets:
-                    pregrasp = copy.deepcopy(self.pregrasp_pose)
-                    grasp = copy.deepcopy(self.grasp_pose)
-                    lift = copy.deepcopy(self.lift_pose)
+                    pregrasp = copy.deepcopy(pregrasp_pose)
+                    grasp = copy.deepcopy(grasp_pose)
+                    lift = copy.deepcopy(lift_pose)
                     tool_axis = self.rotated_tool_axis(quaternion)
                     candidate_contact_x = (
                         contact_x + chord_offset * chord_axis[0]
@@ -698,6 +921,13 @@ class FoamCubeGraspSequence(FoamMoveToPregrasp):
                         }
                     )
         return candidates
+
+    def grasp_pose_candidates(self):
+        return self.grasp_pose_candidates_from_poses(
+            self.pregrasp_pose,
+            self.grasp_pose,
+            self.lift_pose,
+        )
 
     @staticmethod
     def rotated_tool_axis(quaternion):
@@ -1330,7 +1560,7 @@ def main(argv=None):
                 node.spin_for(0.8)
                 node.apply_table()
                 _task_phase(
-                    "readiness",
+                    "planning",
                     node.follow_tracking_target,
                     execute=args.execute,
                     args=args,
