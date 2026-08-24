@@ -148,7 +148,8 @@ def main(argv: list[str] | None = None) -> int:
         return node.wait_until_ready()
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
