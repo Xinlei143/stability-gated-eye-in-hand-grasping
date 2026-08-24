@@ -5,6 +5,7 @@ from foam_grasp_sim.simulation_readiness import (
     REQUIRED_CONTROLLERS,
     REQUIRED_JOINTS,
     ReadinessSnapshot,
+    controller_state_poll_allowed,
     format_missing_conditions,
     missing_conditions,
 )
@@ -40,6 +41,17 @@ class SimulationReadinessTest(unittest.TestCase):
         rendered = format_missing_conditions(missing)
         self.assertIn("/controller_manager/list_controllers unavailable", rendered)
         self.assertIn("action server /gripper8_controller/follow_joint_trajectory not ready", rendered)
+
+    def test_controller_state_poll_waits_for_all_trajectory_servers(self):
+        self.assertFalse(controller_state_poll_allowed(frozenset()))
+        self.assertFalse(
+            controller_state_poll_allowed(
+                frozenset({REQUIRED_ACTION_SERVERS[0]})
+            )
+        )
+        self.assertTrue(
+            controller_state_poll_allowed(frozenset(REQUIRED_ACTION_SERVERS))
+        )
 
 
 if __name__ == "__main__":

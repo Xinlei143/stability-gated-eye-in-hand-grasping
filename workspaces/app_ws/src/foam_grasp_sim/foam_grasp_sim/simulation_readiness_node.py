@@ -16,6 +16,7 @@ from sensor_msgs.msg import JointState
 from foam_grasp_sim.simulation_readiness import (
     REQUIRED_ACTION_SERVERS,
     ReadinessSnapshot,
+    controller_state_poll_allowed,
     format_missing_conditions,
     missing_conditions,
 )
@@ -108,8 +109,16 @@ class SimulationReadinessNode(Node):
         deadline = self._monotonic() + self._timeout_s
         last_missing: tuple[str, ...] = ()
         while rclpy.ok():
-            self._poll_controller_state()
             self._poll_action_servers()
+            if controller_state_poll_allowed(self._ready_action_servers):
+                self._poll_controller_state()
+            else:
+                # Do not touch /controller_manager while gazebo_ros2_control
+                # is still constructing it.  The action-server barrier above
+                # is reached only after all trajectory controllers are active.
+                self._controller_service_available = False
+                self._active_controllers.clear()
+                self._list_controllers_future = None
             last_missing = missing_conditions(self.snapshot())
             if not last_missing:
                 self.get_logger().info(

@@ -57,3 +57,18 @@ def format_missing_conditions(missing: tuple[str, ...] | list[str]) -> str:
     """Render missing conditions for a single timeout log line."""
 
     return "; ".join(missing) if missing else "none"
+
+
+def controller_state_poll_allowed(ready_action_servers: frozenset[str]) -> bool:
+    """Return whether the controller-manager service can be queried safely.
+
+    Gazebo's ``gazebo_ros2_control`` plugin advertises the controller-manager
+    service while the sequential controller spawners are still bringing up the
+    arm.  Querying that service in this short window can make the plugin abort
+    while it is still constructing its controller manager.  The trajectory
+    action servers are only advertised by the fully configured arm and gripper
+    controllers, so they provide a stable startup barrier before the readiness
+    node sends its first ``list_controllers`` request.
+    """
+
+    return set(REQUIRED_ACTION_SERVERS).issubset(ready_action_servers)
