@@ -358,6 +358,11 @@ class MetricsLoggerNode(Node):
         )
 
     def flush(self):
+        metrics = self.metrics.finalize()
+        # MetricsAccumulator may normalize an execute terminal event after
+        # physical lift verification.  Persist that same event stream so
+        # events.csv and metrics.json cannot disagree about task success.
+        self.events = [dict(event) for event in self.metrics.events]
         self._atomic_write(
             self.run_dir / "events.csv",
             lambda stream: self._write_events(stream),
@@ -366,7 +371,6 @@ class MetricsLoggerNode(Node):
             self.run_dir / "states.csv",
             lambda stream: self._write_states(stream),
         )
-        metrics = self.metrics.finalize()
         self._atomic_write(
             self.run_dir / "metrics.json",
             lambda stream: json.dump(metrics, stream, indent=2, sort_keys=True),

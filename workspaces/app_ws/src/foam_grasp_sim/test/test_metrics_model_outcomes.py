@@ -42,6 +42,23 @@ class MetricsOutcomeTest(unittest.TestCase):
         self.assertFalse(result["task_success"])
         self.assertEqual(result["outcome"], "task_failure")
 
+    def test_physical_failure_rewrites_success_terminal_event(self):
+        metrics = MetricsAccumulator()
+        metrics.record_event({"event": "EXECUTION_FINISHED", "sim_time_ns": 1})
+        metrics.record_event(json.loads(make_event(
+            "TRIAL_FINISHED",
+            sim_time_ns=2,
+            details={"execution_mode": "execute", "task_success": True, "outcome": "success"},
+        )))
+
+        metrics.finalize()
+
+        terminal = metrics.events[-1]
+        self.assertEqual(terminal["event"], "TRIAL_FINISHED")
+        self.assertFalse(terminal["details"]["task_success"])
+        self.assertEqual(terminal["details"]["outcome"], "task_failure")
+        self.assertEqual(terminal["details"]["failure_stage"], "verification")
+
 
 if __name__ == "__main__":
     unittest.main()

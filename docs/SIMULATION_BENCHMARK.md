@@ -166,9 +166,10 @@ interruption the runner signals only that group in order: SIGINT, SIGTERM, then
 SIGKILL after bounded grace periods. It never calls global `pkill ros2`,
 `pkill gazebo`, or kills processes it did not start.
 
-Stage 6 stops at reproducible orchestration and raw run artifacts. RGB-D
-integration, offline analysis, plotting, and the complete paper benchmark
-matrix remain outside this workflow.
+Stage 6 stops at reproducible orchestration and raw run artifacts. The complete
+formal experiment audit is a separate Python-only workflow over frozen campaign
+artifacts; it does not change the Stage 6 runner contract or start another
+campaign.
 
 ## Stage 7 simulated eye-in-hand RGB-D pipeline
 
@@ -278,8 +279,11 @@ Malformed metrics and incomplete/failed runs are listed in `excluded_runs.csv`,
 never silently treated as successes. Paired results are reported as
 `gated - snapshot` and `gated - tracking` by `pair_id`.
 
-Stage 7 does not add RGB-D domain adaptation, retraining, ground-truth
-shortcuts, statistical claims, or the complete paper benchmark matrix.
+Stage 7 does not add RGB-D domain adaptation, retraining, or ground-truth
+shortcuts. The completed formal controlled and simulated RGB-D campaigns are
+audited separately with `scripts/generate_final_experiment_summary.py`, using
+independent denominators and without extrapolating simulated RGB-D results to
+real-camera performance.
 
 ## Gazebo grasp stabilization qualification
 

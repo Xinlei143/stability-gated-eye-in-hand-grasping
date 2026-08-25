@@ -156,6 +156,16 @@ class TrackingPregraspPlanningTest(unittest.TestCase):
             ),
         )
 
+    def test_execute_live_state_expiry_is_reported_as_task_failure(self):
+        source = Path(__file__).parents[1] / "foam_grasp" / "foam_cube_grasp_sequence.py"
+        text = source.read_text(encoding="utf-8")
+        self.assertRegex(
+            text,
+            re.compile(
+                r'refreshed\s*=\s*_task_phase\(\s+"safety",\s+node\.validate_live_state'
+            ),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

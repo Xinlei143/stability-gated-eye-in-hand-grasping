@@ -4,12 +4,14 @@
 import csv
 import json
 import math
+import os
 import time
 from pathlib import Path
 
 import rclpy
 import yaml
 from control_msgs.action import FollowJointTrajectory
+from control_msgs.msg import JointTrajectoryControllerState
 from gazebo_msgs.msg import ContactsState
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -22,6 +24,7 @@ from foam_grasp_sim.control_qualification import (
     summarize_gripper_run,
 )
 from foam_grasp_sim.contact_diagnostics import extract_contact_rows
+from foam_grasp.gripper_trace import make_trace_row
 
 
 ARM_JOINTS = ("joint1", "joint2", "joint3", "joint4", "joint5", "joint6")
@@ -56,7 +59,38 @@ class ControlPhysicsQualification(Node):
         self.samples = []
         self._samples_path_initialized = False
         self.contact_forces = {"left": 0.0, "right": 0.0}
+        self._gripper_trace_path = os.environ.get("FOAM_GRIPPER_TRACE_PATH", "")
+        self._gripper_trace_duration_s = self._env_float(
+            "FOAM_GRIPPER_TRACE_DURATION_S", 1.0
+        )
+        self._gripper_trace_interval_s = self._env_float(
+            "FOAM_GRIPPER_TRACE_INTERVAL_S", 0.05
+        )
+        self._gripper_trace_pair_index = 0
+        self._gripper_trace_started_s = None
+        self._gripper_trace_last_sample_s = None
+        self._gripper_trace_commands = (None, None)
+        self._gripper_trace_rows = []
+        self._gripper_feedback = {
+            "joint7": {"position": None, "stamp_s": None},
+            "joint8": {"position": None, "stamp_s": None},
+        }
         self.create_subscription(JointState, "/joint_states", self._joint_callback, 50)
+        self.create_subscription(
+            JointTrajectoryControllerState,
+            "/gripper_controller/controller_state",
+            lambda message: self._gripper_feedback_callback(message, "joint7"),
+            10,
+        )
+        self.create_subscription(
+            JointTrajectoryControllerState,
+            "/gripper8_controller/controller_state",
+            lambda message: self._gripper_feedback_callback(message, "joint8"),
+            10,
+        )
+        self._gripper_trace_timer = self.create_timer(
+            self._gripper_trace_interval_s, self._sample_gripper_trace
+        )
         if self.mode == "loaded_gripper":
             self.create_subscription(
                 ContactsState,
@@ -79,6 +113,110 @@ class ControlPhysicsQualification(Node):
         self.gripper8_client = ActionClient(
             self, FollowJointTrajectory, "/gripper8_controller/follow_joint_trajectory"
         )
+
+    @staticmethod
+    def _env_float(name, default):
+        try:
+            value = float(os.environ.get(name, default))
+        except (TypeError, ValueError):
+            return float(default)
+        return value if value > 0.0 else float(default)
+
+    @staticmethod
+    def _message_stamp_s(message):
+        stamp = getattr(getattr(message, "header", None), "stamp", None)
+        if stamp is None:
+            return None
+        try:
+            return float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    def _gripper_feedback_callback(self, message, joint_name):
+        try:
+            index = message.joint_names.index(joint_name)
+        except ValueError:
+            return
+        if index >= len(message.actual.positions):
+            return
+        self._gripper_feedback[joint_name] = {
+            "position": float(message.actual.positions[index]) * 2.0,
+            "stamp_s": self._message_stamp_s(message),
+        }
+
+    def _start_gripper_trace(self, joint7, joint8):
+        if not self._gripper_trace_path:
+            return
+        self._gripper_trace_pair_index += 1
+        self._gripper_trace_started_s = time.monotonic()
+        self._gripper_trace_last_sample_s = None
+        self._gripper_trace_commands = (float(joint7), float(joint8))
+        self._gripper_trace_rows = []
+        self._sample_gripper_trace(force=True)
+
+    def _sample_gripper_trace(self, *, force=False):
+        if self._gripper_trace_started_s is None:
+            return
+        elapsed = time.monotonic() - self._gripper_trace_started_s
+        if elapsed > self._gripper_trace_duration_s:
+            return
+        if (
+            not force
+            and self._gripper_trace_last_sample_s is not None
+            and elapsed - self._gripper_trace_last_sample_s
+            < self._gripper_trace_interval_s
+        ):
+            return
+        joint7 = self._gripper_feedback["joint7"]
+        joint8 = self._gripper_feedback["joint8"]
+        self._gripper_trace_rows.append(
+            make_trace_row(
+                wall_time_s=elapsed,
+                joint7_command=self._gripper_trace_commands[0],
+                joint8_command=self._gripper_trace_commands[1],
+                joint7_feedback=joint7["position"],
+                joint8_feedback=joint8["position"],
+                joint7_stamp_s=joint7["stamp_s"],
+                joint8_stamp_s=joint8["stamp_s"],
+            )
+        )
+        self._gripper_trace_last_sample_s = elapsed
+
+    def _finish_gripper_trace(self):
+        if self._gripper_trace_started_s is None:
+            return
+        try:
+            self._sample_gripper_trace()
+            if not self._gripper_trace_rows:
+                self._sample_gripper_trace(force=True)
+            base = Path(self._gripper_trace_path)
+            suffix = base.suffix or ".csv"
+            stem = base.stem or "gripper_trace"
+            path = base.with_name(
+                f"{stem}_pair{self._gripper_trace_pair_index:02d}{suffix}"
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fields = list(self._gripper_trace_rows[0]) if self._gripper_trace_rows else [
+                "wall_time_s",
+                "joint7_command",
+                "joint8_command",
+                "joint7_feedback",
+                "joint8_feedback",
+                "joint7_stamp_s",
+                "joint8_stamp_s",
+                "symmetry_error_m",
+            ]
+            with path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(self._gripper_trace_rows)
+        except Exception as error:
+            self.get_logger().warning(f"gripper trace write failed: {error}")
+        finally:
+            self._gripper_trace_started_s = None
+            self._gripper_trace_last_sample_s = None
+            self._gripper_trace_commands = (None, None)
+            self._gripper_trace_rows = []
 
     def _joint_callback(self, message):
         positions = dict(zip(message.name, message.position))
@@ -163,31 +301,35 @@ class ControlPhysicsQualification(Node):
         self._wait_for_server(self.gripper7_client)
         self._wait_for_server(self.gripper8_client)
         self.samples = []
+        self._start_gripper_trace(joint7, joint8)
         goals = [
             (self.gripper7_client, self._goal(("joint7",), (joint7,))),
             (self.gripper8_client, self._goal(("joint8",), (joint8,))),
         ]
-        requests = [client.send_goal_async(goal) for client, goal in goals]
-        handles = []
-        for request in requests:
-            rclpy.spin_until_future_complete(
-                self, request, timeout_sec=float(self.config.get("action_timeout_s", 30.0))
-            )
-            if not request.done() or request.result() is None or not request.result().accepted:
-                raise RuntimeError("gripper FollowJointTrajectory goal was rejected")
-            handles.append(request.result())
-        results = []
-        for handle in handles:
-            result_future = handle.get_result_async()
-            rclpy.spin_until_future_complete(
-                self,
-                result_future,
-                timeout_sec=float(self.config.get("action_timeout_s", 30.0)),
-            )
-            if not result_future.done() or result_future.result() is None:
-                raise RuntimeError("gripper FollowJointTrajectory result timed out")
-            results.append(int(result_future.result().result.error_code))
-        return max(results), list(self.samples)
+        try:
+            requests = [client.send_goal_async(goal) for client, goal in goals]
+            handles = []
+            for request in requests:
+                rclpy.spin_until_future_complete(
+                    self, request, timeout_sec=float(self.config.get("action_timeout_s", 30.0))
+                )
+                if not request.done() or request.result() is None or not request.result().accepted:
+                    raise RuntimeError("gripper FollowJointTrajectory goal was rejected")
+                handles.append(request.result())
+            results = []
+            for handle in handles:
+                result_future = handle.get_result_async()
+                rclpy.spin_until_future_complete(
+                    self,
+                    result_future,
+                    timeout_sec=float(self.config.get("action_timeout_s", 30.0)),
+                )
+                if not result_future.done() or result_future.result() is None:
+                    raise RuntimeError("gripper FollowJointTrajectory result timed out")
+                results.append(int(result_future.result().result.error_code))
+            return max(results), list(self.samples)
+        finally:
+            self._finish_gripper_trace()
 
     def _write_samples(self, cycle, stage, samples):
         path = self.output_dir / "samples.csv"

@@ -31,6 +31,14 @@ class FakeNode:
         return [0.0] * 6 + [0.07]
 
 
+class FakeLogger:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, message):
+        self.warnings.append(message)
+
+
 class ExecutionBackendTest(unittest.TestCase):
     def test_execution_result_keeps_legacy_unpacking(self):
         result = ExecutionResult(1.25, 0.01, 0.02)
@@ -122,6 +130,70 @@ class ExecutionBackendTest(unittest.TestCase):
         backend.node.spin_for = lambda seconds: None
         backend.command_gripper(0.04, types.SimpleNamespace())
         self.assertEqual(calls["trajectory_count"], 2)
+
+    def test_gripper_gate_snapshot_records_feedback_and_controller_stamps(self):
+        backend = object.__new__(Ros2ControlBackend)
+        backend._gripper_feedback_position = 0.05252
+        backend._gripper8_feedback_position = -0.04750
+        backend._gripper_feedback_stamp_s = 34.9
+        backend._gripper8_feedback_stamp_s = 34.9
+
+        snapshot = backend._gripper_gate_snapshot()
+
+        self.assertAlmostEqual(snapshot["joint7_feedback"], 0.05252)
+        self.assertAlmostEqual(snapshot["joint8_feedback"], -0.04750)
+        self.assertEqual(snapshot["joint7_stamp_s"], 34.9)
+        self.assertEqual(snapshot["joint8_stamp_s"], 34.9)
+        self.assertAlmostEqual(snapshot["symmetry_error_m"], 0.00502)
+
+    def test_simulation_gripper_command_warns_on_contact_asymmetry(self):
+        backend = object.__new__(Ros2ControlBackend)
+        backend.node = FakeNode()
+        logger = FakeLogger()
+        backend.node.get_logger = lambda: logger
+        backend.gripper_joint_name = "joint7"
+        backend.gripper_command_scale = 0.5
+        backend.gripper_client = object()
+        backend.gripper8_client = object()
+        backend._prepared = True
+        backend._gripper_trace_path = ""
+        backend._gripper_feedback_position = 0.052
+        backend._gripper8_feedback_position = -0.048
+        backend._gripper_feedback_stamp_s = 10.0
+        backend._gripper8_feedback_stamp_s = 10.0
+        backend._execute_gripper_pair = lambda trajectories, label: ExecutionResult(
+            1.0, 0.0, 0.0, gripper_position=0.07
+        )
+        backend.node.spin_for = lambda seconds: None
+
+        result = backend.command_gripper(
+            0.04, types.SimpleNamespace(close_opening_mm=40.0)
+        )
+
+        self.assertAlmostEqual(result, 0.07)
+        self.assertEqual(len(logger.warnings), 1)
+        self.assertIn("symmetry", logger.warnings[0])
+
+    def test_simulation_gripper_command_keeps_preopen_symmetry_gate(self):
+        backend = object.__new__(Ros2ControlBackend)
+        backend.node = FakeNode()
+        backend.gripper_joint_name = "joint7"
+        backend.gripper_command_scale = 0.5
+        backend.gripper_client = object()
+        backend.gripper8_client = object()
+        backend._prepared = True
+        backend._gripper_trace_path = ""
+        backend._gripper_feedback_position = 0.052
+        backend._gripper8_feedback_position = -0.048
+        backend._execute_gripper_pair = lambda trajectories, label: ExecutionResult(
+            1.0, 0.0, 0.0, gripper_position=0.07
+        )
+        backend.node.spin_for = lambda seconds: None
+
+        with self.assertRaisesRegex(RuntimeError, "not symmetric"):
+            backend.command_gripper(
+                0.07, types.SimpleNamespace(close_opening_mm=40.0)
+            )
 
     def test_simulation_backend_does_not_use_node_publisher_hack(self):
         backend = object.__new__(Ros2ControlBackend)
