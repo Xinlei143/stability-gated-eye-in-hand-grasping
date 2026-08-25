@@ -87,6 +87,40 @@ Each run records target ground truth, observations, selected and committed targe
 
 See [`docs/SIMULATION_BENCHMARK.md`](docs/SIMULATION_BENCHMARK.md) for the complete benchmark contract and reproduction commands.
 
+## Final frozen experiment audit
+
+The repository includes a read-only Python audit for the completed formal
+campaigns. It consumes the existing campaign `trials.csv` rows and their
+`metadata.json`, `events.csv`, `states.csv`, and `metrics.json` artifacts; it
+does not start ROS/Gazebo/MoveIt or modify the source campaigns.
+
+The formal evidence is kept in two independent denominators:
+
+- Controlled ground-truth: 120 canonical trials (`3 methods × 2 scenarios ×
+  seeds 42–61`);
+- simulated semantic RGB-D: 30 canonical trials (`3 methods × 2 scenarios ×
+  seeds 42–46`).
+
+Qualification and development runs are reported as evidence only. Infrastructure
+reruns are retained for provenance and are not counted twice. Generate the
+audit bundle with:
+
+```bash
+python3 scripts/generate_final_experiment_summary.py
+```
+
+The generator writes only to `results/final_experiment_summary/`, including the
+Chinese final report, trial-level and grouped CSV files, paper tables, figures,
+input hashes, and QA records. The `results/` directory is ignored by Git, so
+the bundle is a local reproducibility artifact unless it is published through a
+separate release channel.
+
+The audit defines final task success as canonical `task_success=true` together
+with `physical_grasp_success=true`; `PLAN_SUCCEEDED` only records that at least
+one MoveIt/path plan succeeded. Controlled and simulated RGB-D results are not
+pooled, and simulated RGB-D results are not presented as real-camera physical
+performance.
+
 ## Current limitations
 
 The current repository provides the infrastructure for controlled baseline comparisons and repeated simulation campaigns, but no claim of statistical superiority is made here unless supported by completed experimental results. The current system also does not establish motion prediction, same-class distractor rejection, or repeated-trial physical grasp success.
@@ -100,7 +134,7 @@ dependencies/                   vcs manifests for ROS 2 dependencies
 docs/                           deployment, operation, and reproducibility notes
 patches/                        minimal upstream patches
 runtime/                        model/calibration instructions and model card
-scripts/                        installation, validation, and release helpers
+scripts/                        installation, validation, benchmark, audit, and release helpers
 training/                       capture, labeling, training, and evaluation scripts
 workspaces/app_ws/              physical foam_grasp and Gazebo/benchmark foam_grasp_sim ROS 2 packages
 analysis/                       offline metrics, paired comparisons, bootstrap CIs, tables, and plots
@@ -108,8 +142,9 @@ analysis/                       offline metrics, paired comparisons, bootstrap C
 
 Raw images, LabelMe annotations, generated masks, training runs, rosbag files, model checkpoints, and hardware calibration JSON are not committed to ordinary Git history. See `data/README.md` and `runtime/models/README.md` or `runtime/calibration/README.md` for the intended release channels.
 
-Analysis tools consume campaign artifacts only and write to a separate
-`<campaign_id>-analysis/` directory.
+General analysis tools consume campaign artifacts only and write to a separate
+`<campaign_id>-analysis/` directory. The final frozen experiment audit is a
+separate read-only workflow and writes to `results/final_experiment_summary/`.
 
 ## Requirements
 
