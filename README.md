@@ -12,17 +12,128 @@ Zhang Yue and Xinlei Lin, IEEE EPIC 2026 short-paper submission.
 
 The paper is not described as accepted or published. Citation information will be updated after the conference decision.
 
-## Project provenance
+## Contributions and roles
 
-The original project was developed through collaboration between Zhang Yue and Wei Liu. An earlier version of the shared codebase, including contributions from both collaborators, was published under Wei Liu's GitHub account at [`WillLiu322/foam-grasp-ros2`](https://github.com/WillLiu322/foam-grasp-ros2). That repository predates the present repository and already contained major components of the robotic grasping system, including semantic RGB-D perception, camera-to-base target localization, MoveIt-based motion planning and validation, target latching, and the Piper grasp-execution pipeline. The codebase was subsequently provided for the present study with Wei Liu's permission.
+This repository combines a pre-existing Piper RGB-D grasping pipeline, the
+stability-gated tracking-to-grasp study direction, and the present work's
+simulation, benchmarking, and evaluation infrastructure.
 
-The continuous target-tracking and stability-gated tracking-to-grasp study direction presented in the associated manuscript was proposed by Zhang Yue, who leads the manuscript preparation and serves as first author. Wei Liu provided the Piper manipulator and RGB-D experimental platform and collaborated on the development and validation of the physical system.
+**Zhang Yue** proposed the continuous target-tracking and stability-gated
+tracking-to-grasp study direction, leads the manuscript preparation, and serves
+as first author of the associated IEEE EPIC 2026 short-paper submission.
 
-Building on the pre-existing grasping pipeline, Xinlei Lin led the subsequent software implementation and evaluation development in this repository, including the real/simulation execution abstraction, Gazebo and MoveIt simulation infrastructure, moving-target and simulated-perception models, snapshot/tracking/gated method-policy integration, benchmark orchestration, latency/noise/dropout evaluation, metrics and offline statistical analysis, simulated eye-in-hand RGB-D integration, and end-to-end simulation grasp validation. These contributions are documented in the repository history, primarily through PRs #1–#10.
+**Xinlei Lin** led the subsequent software implementation, simulation,
+integration, and experimental evaluation in this repository, including the ROS
+2/Gazebo/MoveIt simulation framework, tracking-policy integration, simulated
+RGB-D pipeline, benchmark and disturbance-evaluation infrastructure,
+quantitative analysis, grasp-physics validation, and final experiment-audit
+tooling.
 
-The present repository therefore combines the pre-existing robotic grasping system, the stability-gated tracking study direction, and the subsequent simulation, benchmarking, integration, and evaluation software developed for the current work.
+**Wei Liu** provided the Piper manipulator and RGB-D experimental platform and
+collaborated on the development and validation of the physical robotic system.
+The underlying repository also builds on an earlier shared grasping pipeline
+developed through collaboration between Zhang Yue and Wei Liu.
 
-The provenance statement above describes collaboration and software-development history and does not determine the authorship of the associated manuscript.
+See [Project provenance](#project-provenance) for the detailed development
+history and relationship to the earlier shared codebase.
+
+## Evaluation at a glance
+
+The repository keeps controlled ground-truth and simulated semantic RGB-D
+experiments in separate formal evaluation tracks.
+
+| Evaluation track | Formal scale | Methods | Experimental design |
+| --- | ---: | --- | --- |
+| Controlled ground-truth | 120 canonical trials | `snapshot`, `tracking`, `gated` | 3 methods x 2 scenarios x seeds 42-61 |
+| Simulated semantic RGB-D | 30 canonical trials | `snapshot`, `tracking`, `gated` | 3 methods x 2 scenarios x seeds 42-46 |
+
+`snapshot` commits the first valid target, `tracking` follows the latest target
+estimate, and `gated` waits for the configured stability criteria before target
+commitment. Each canonical trial selects one finished attempt for a method,
+scenario, and seed; infrastructure reruns retain their provenance without
+duplicating the denominator.
+
+The campaigns use matched target trajectories and deterministic seeds. The
+runner records target, method, planning, execution, and physical lift/hold
+evidence for each trial. The final audit requires canonical `task_success=true`
+and `physical_grasp_success=true` for task success. A successful MoveIt plan,
+trajectory completion, or Gazebo attachment does not establish task success.
+
+## Key quantitative results
+
+Controlled ground-truth trials isolate target-selection behavior from semantic
+perception errors.
+
+| Method | Static task success | Move-stop task success |
+| --- | ---: | ---: |
+| `snapshot` | 20/20 | 0/20 |
+| `tracking` | 20/20 | 20/20 |
+| `gated` | 20/20 | 20/20 |
+
+Snapshot committed an early target and ended all 20 controlled move-stop trials
+at physical verification. Tracking and gated completed all 40 controlled trials
+across the two scenarios.
+
+Simulated semantic RGB-D trials exercise segmentation, depth fusion, and
+camera-to-base localization before the policy receives a target.
+
+| Method | Static task success | Move-stop task success |
+| --- | ---: | ---: |
+| `snapshot` | 5/5 | 0/5 |
+| `tracking` | 0/5 | 0/5 |
+| `gated` | 5/5 | 5/5 |
+
+All 30 simulated RGB-D trials recorded at least one successful MoveIt/path plan.
+Snapshot ended its five move-stop trials at the grasp stage. Tracking ended all
+10 trials at the task-level planning stage because it could not satisfy the
+fresh, low-drift PREGRASP (planned pre-grasp pose) commitment conditions within
+the frozen limits. Gated completed all 10 trials. Each RGB-D condition contains
+five trials, so these counts describe the frozen simulator configuration and do
+not estimate real-camera performance.
+
+The source cells appear in
+`results/final_experiment_summary/table_1_controlled_success.csv`,
+`results/final_experiment_summary/table_2_rgbd_success.csv`, and
+`results/final_experiment_summary/table_3_rgbd_detailed_outcome.csv`. The final
+audit bundle remains local because Git ignores `results/`.
+
+## System architecture
+
+```mermaid
+flowchart LR
+    RGBD[Physical or Gazebo RGB-D frames] --> SEG[Semantic segmentation]
+    SEG --> FUSION[Latest mask and current depth]
+    FUSION --> LOC[Camera-to-base target localization]
+
+    GT[Controlled ground-truth target] --> POLICY{Target-selection policy}
+    LOC --> POLICY
+    POLICY --> SNAP[snapshot commitment]
+    POLICY --> TRACK[continuous tracking]
+    POLICY --> GATED[stability-gated commitment]
+
+    SNAP --> PLAN[MoveIt inverse kinematics, collision, and path validation]
+    TRACK --> PLAN
+    GATED --> PLAN
+    PLAN --> EXEC[Grasp and lift execution]
+
+    GT --> TELEMETRY[Run-level telemetry]
+    LOC --> TELEMETRY
+    POLICY --> TELEMETRY
+    PLAN --> TELEMETRY
+    EXEC --> TELEMETRY
+    TELEMETRY --> METRICS[Metrics and task-success evaluation]
+    METRICS --> AUDIT[Tables, figures, hashes, and quality checks]
+
+    MOTION[Target motion] -.-> GT
+    MOTION -.-> RGBD
+    PERCEPTION[Latency, noise, and dropout] -.-> RGBD
+```
+
+Both formal tracks use the same method-policy and task-evaluation interfaces.
+The controlled track supplies target ground truth to the policy. The simulated
+semantic RGB-D track reaches the policy through segmentation, depth fusion, and
+camera-to-base localization; it does not substitute ground-truth coordinates
+for the perception output.
 
 ## System scope
 
@@ -75,13 +186,11 @@ patch provenance.
 
 ## Reproducible simulation and benchmarking
 
-The simulation framework provides controlled evaluation of three target-selection and tracking policies:
-
-- `snapshot`: commits the first valid target observation;
-- `tracking`: continuously follows the latest target estimate with bounded replanning;
-- `gated`: commits a target only after the configured stability criteria are satisfied.
-
-Packaged benchmark suites cover baseline comparison, latency, perception noise, observation dropout, and stability-gate ablations. Trials use deterministic configuration hashes and paired seeds so methods can be compared under matched target trajectories and disturbance conditions.
+The three target-selection policies run through a common simulation and
+evaluation interface. Packaged benchmark suites cover baseline comparison,
+latency, perception noise, observation dropout, and stability-gate ablations.
+Deterministic configuration hashes and paired seeds expose each method to
+matched target trajectories and disturbance conditions.
 
 Each run records target ground truth, observations, selected and committed targets, TCP state, joint state, readiness, and execution events. Offline analysis produces run-level metrics, grouped summaries, paired method differences, deterministic bootstrap confidence intervals, and publication-oriented plots.
 
@@ -90,40 +199,60 @@ See [`docs/SIMULATION_BENCHMARK.md`](docs/SIMULATION_BENCHMARK.md) for the compl
 ## Final frozen experiment audit
 
 The repository includes a read-only Python audit for the completed formal
-campaigns. It consumes the existing campaign `trials.csv` rows and their
-`metadata.json`, `events.csv`, `states.csv`, and `metrics.json` artifacts; it
-does not start ROS/Gazebo/MoveIt or modify the source campaigns.
-
-The formal evidence is kept in two independent denominators:
-
-- Controlled ground-truth: 120 canonical trials (`3 methods × 2 scenarios ×
-  seeds 42–61`);
-- simulated semantic RGB-D: 30 canonical trials (`3 methods × 2 scenarios ×
-  seeds 42–46`).
-
-Qualification and development runs are reported as evidence only. Infrastructure
-reruns are retained for provenance and are not counted twice. Generate the
+campaigns. It reads the canonical `trials.csv` rows and each trial's
+`metadata.json`, `events.csv`, `states.csv`, and `metrics.json`. The workflow
+does not start ROS/Gazebo/MoveIt or modify the source campaigns. Generate the
 audit bundle with:
 
 ```bash
 python3 scripts/generate_final_experiment_summary.py
 ```
 
-The generator writes only to `results/final_experiment_summary/`, including the
-Chinese final report, trial-level and grouped CSV files, paper tables, figures,
-input hashes, and QA records. The `results/` directory is ignored by Git, so
-the bundle is a local reproducibility artifact unless it is published through a
-separate release channel.
-
-The audit defines final task success as canonical `task_success=true` together
-with `physical_grasp_success=true`; `PLAN_SUCCEEDED` only records that at least
-one MoveIt/path plan succeeded. Controlled and simulated RGB-D results are not
-pooled, and simulated RGB-D results are not presented as real-camera physical
-performance.
+The generator writes the Chinese report, trial-level and grouped CSV files,
+paper tables, figures, input hashes, and quality-assurance records to
+`results/final_experiment_summary/`. Qualification runs remain outside the
+formal denominators. Infrastructure reruns retain their provenance and enter
+each denominator once through the canonical attempt.
 
 ## Current limitations
 
-The current repository provides the infrastructure for controlled baseline comparisons and repeated simulation campaigns, but no claim of statistical superiority is made here unless supported by completed experimental results. The current system also does not establish motion prediction, same-class distractor rejection, or repeated-trial physical grasp success.
+The formal results describe the frozen controlled and simulated RGB-D
+configurations; they do not establish general statistical superiority or
+real-camera physical performance. The current system also does not establish
+motion prediction, same-class distractor rejection, or repeated-trial physical
+grasp success.
+
+## Project provenance
+
+Zhang Yue and Wei Liu developed the original project together. Wei Liu
+published an earlier version of the shared codebase, including contributions
+from both collaborators, under his GitHub account at
+[`WillLiu322/foam-grasp-ros2`](https://github.com/WillLiu322/foam-grasp-ros2).
+That repository predates the present repository and already contained semantic
+RGB-D perception, camera-to-base target localization, MoveIt-based motion
+planning and validation, target latching, and the Piper grasp-execution
+pipeline. Wei Liu provided the codebase for the present study with permission.
+
+Zhang Yue proposed the continuous target-tracking and stability-gated
+tracking-to-grasp study direction and leads the associated manuscript. Wei Liu
+provided the Piper manipulator and RGB-D platform and collaborated on physical
+system development and validation.
+
+Building on that pipeline, Xinlei Lin led the subsequent software implementation
+and evaluation development in this repository. This work expanded the project
+into a reproducible simulation and benchmarking platform with real/simulation
+execution, Gazebo/MoveIt integration, target-motion and perception-disturbance
+models, comparative policy execution, simulated eye-in-hand RGB-D perception,
+grasp-physics qualification, benchmark campaigns, metrics, offline analysis,
+and final experiment auditing. The Git history records the staged pull-request
+series through PR #15 and subsequent commits for RGB-D validation, grasp
+stabilization, benchmark hardening, and final audit tooling.
+
+The present repository combines the pre-existing robotic grasping system, the
+stability-gated tracking study direction, and the subsequent simulation,
+benchmarking, integration, and evaluation software developed for the current
+work. This provenance statement describes collaboration and software history;
+it does not determine manuscript authorship.
 
 ## Repository layout
 
