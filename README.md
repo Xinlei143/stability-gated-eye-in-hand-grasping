@@ -245,7 +245,7 @@ execution, Gazebo/MoveIt integration, target-motion and perception-disturbance
 models, comparative policy execution, simulated eye-in-hand RGB-D perception,
 grasp-physics qualification, benchmark campaigns, metrics, offline analysis,
 and final experiment auditing. The Git history records the staged pull-request
-series through PR #15 and subsequent commits for RGB-D validation, grasp
+series through PR #16 and subsequent commits for RGB-D validation, grasp
 stabilization, benchmark hardening, and final audit tooling.
 
 The present repository combines the pre-existing robotic grasping system, the
