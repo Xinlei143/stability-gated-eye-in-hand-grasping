@@ -124,6 +124,14 @@ def status_for_artifacts(run_dir: Path, status: Mapping[str, Any]) -> dict[str, 
             return result
         return result
     if result.get("execution_mode") == "execute":
+        if metrics.get("trial_status") not in (None, "finished"):
+            result.update({
+                "status": "failed", "trial_success": False,
+                "task_success": False, "outcome": "infrastructure_failure",
+                "failure_class": "infrastructure", "failure_stage": "metrics",
+                "error": f"execute metrics trial_status={metrics.get('trial_status')}",
+            })
+            return result
         if not isinstance(metrics.get("task_success"), bool):
             result.update({
                 "status": "failed", "trial_success": False,
@@ -132,6 +140,45 @@ def status_for_artifacts(run_dir: Path, status: Mapping[str, Any]) -> dict[str, 
                 "error": "execute metrics task_success missing",
             })
             return result
+        if metrics["task_success"] and metrics.get("physical_grasp_success") is not True:
+            result.update({
+                "status": "failed", "trial_success": False,
+                "task_success": False, "outcome": "infrastructure_failure",
+                "failure_class": "infrastructure", "failure_stage": "metrics",
+                "error": "execute metrics task_success without physical grasp success",
+            })
+            return result
+        events_path = run_dir / "events.csv"
+        if events_path.is_file():
+            try:
+                with events_path.open(encoding="utf-8", newline="") as stream:
+                    events = list(csv.DictReader(stream))
+                terminal_events = [
+                    event for event in events
+                    if event.get("event") in {"TRIAL_FINISHED", "TRIAL_FAILED"}
+                ]
+                terminal = terminal_events[-1] if len(terminal_events) == 1 else None
+                details = json.loads(terminal.get("details", "{}")) if terminal else {}
+            except (OSError, ValueError, json.JSONDecodeError, TypeError):
+                terminal = None
+                details = {}
+            if (
+                terminal is None
+                or terminal.get("event") != "TRIAL_FINISHED"
+                or not isinstance(details, dict)
+                or details.get("task_success") != metrics.get("task_success")
+                or (
+                    metrics.get("outcome") is not None
+                    and details.get("outcome") != metrics.get("outcome")
+                )
+            ):
+                result.update({
+                    "status": "failed", "trial_success": False,
+                    "task_success": False, "outcome": "infrastructure_failure",
+                    "failure_class": "infrastructure", "failure_stage": "events",
+                    "error": "events.csv terminal does not match finalized metrics",
+                })
+                return result
         result.update({
             "status": "finished", "trial_success": True,
             "task_success": metrics["task_success"],
@@ -218,7 +265,16 @@ def stop_process_group(
             return "already_exited"
     if not _process_group_exists(pgid):
         return "already_exited"
-    _signal_process_group_id(pgid, signal.SIGINT)
+    # ros2 launch forwards a signal from its leader to the child processes.
+    # Signal the live leader first so the metrics logger receives one orderly
+    # shutdown request instead of a duplicate SIGINT from the whole group.
+    if process.poll() is None:
+        try:
+            os.kill(process.pid, signal.SIGINT)
+        except ProcessLookupError:
+            _signal_process_group_id(pgid, signal.SIGINT)
+    else:
+        _signal_process_group_id(pgid, signal.SIGINT)
     if _wait_process_group(pgid, grace_s):
         return "sigint"
     _signal_process_group_id(pgid, signal.SIGTERM)
@@ -493,6 +549,9 @@ class CampaignRunner:
         elif terminal is not None:
             values = status_for_terminal(terminal)
             values = status_for_artifacts(run_dir, values)
+            # A rerun starts from the prior CSV row.  Ensure a completed
+            # terminal event cannot inherit its previous infrastructure class.
+            values.setdefault("failure_class", "")
             row.update({key: str(value).lower() for key, value in values.items()})
         else:
             row.update({

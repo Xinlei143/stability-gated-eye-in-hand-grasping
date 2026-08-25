@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import signal
@@ -7,6 +8,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from foam_grasp_sim.experiment_runner import (
     CampaignRunner,
@@ -123,6 +126,22 @@ class ExperimentRunnerTest(unittest.TestCase):
             if child.poll() is None:
                 child.kill()
 
+    def test_stop_process_group_signals_live_leader_before_group(self):
+        process = SimpleNamespace(pid=1234, poll=lambda: None)
+        with patch(
+            "foam_grasp_sim.experiment_runner._process_group_exists",
+            return_value=True,
+        ), patch(
+            "foam_grasp_sim.experiment_runner._wait_process_group",
+            return_value=True,
+        ), patch("foam_grasp_sim.experiment_runner.os.kill") as kill, patch(
+            "foam_grasp_sim.experiment_runner._signal_process_group_id"
+        ) as group_signal:
+            cleanup = stop_process_group(process, pgid=1234, grace_s=0.01)
+        self.assertEqual(cleanup, "sigint")
+        kill.assert_called_once_with(1234, signal.SIGINT)
+        group_signal.assert_not_called()
+
     def test_dry_run_never_starts_subprocess(self):
         class NeverStart:
             def __call__(self, *args, **kwargs):
@@ -183,11 +202,74 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertEqual(status["outcome"], "task_failure")
             self.assertEqual(status["failure_stage"], "grasp")
 
+    def test_rerun_finished_task_failure_clears_stale_infrastructure_fields(self):
+        specs = expand_suite({
+            "schema_version": 1,
+            "name": "rerun-stale-fields",
+            "defaults": {"target_model": "cube", "execute_motion": True},
+            "methods": ["gated"], "trajectories": ["static"], "seeds": [42],
+            "sweeps": [],
+        })
+
+        def factory(command, **kwargs):
+            arguments = {
+                item.split(":=", 1)[0]: item.split(":=", 1)[1]
+                for item in command if ":=" in item
+            }
+            run_dir = Path(arguments["results_root"]) / arguments["run_id"]
+            run_dir.mkdir(parents=True)
+            for name in ("metadata.json", "states.csv"):
+                (run_dir / name).write_text("{}")
+            with (run_dir / "events.csv").open("w", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(("schema_version", "sim_time_ns", "event", "method", "scenario", "seed", "details"))
+                writer.writerow((1, 1, "TRIAL_FINISHED", "gated", "static", 42, json.dumps({
+                    "execution_mode": "execute",
+                    "outcome": "task_failure",
+                    "task_success": False,
+                })))
+            (run_dir / "metrics.json").write_text(json.dumps({
+                "physical_grasp_success": False,
+                "task_success": False,
+            }))
+            script = (
+                "import json; "
+                "print('BENCHMARK_TERMINAL_EVENT=' + json.dumps({"
+                "'schema_version':1,'event':'TRIAL_FINISHED','sim_time_ns':1,"
+                "'method':'gated','scenario':'static','seed':42,'details':{"
+                "'execution_mode':'execute','outcome':'task_failure',"
+                "'failure_stage':'grasp','reason':'no contact','task_success':False}}), flush=True)"
+            )
+            return subprocess.Popen([sys.executable, "-c", script], **kwargs)
+
+        with tempfile.TemporaryDirectory() as directory:
+            campaign = Path(directory) / "campaign"
+            runner = CampaignRunner(specs, campaign, popen_factory=factory)
+            spec = specs[0]
+            runner.rows[spec.run_id] = dict(
+                runner._base_row(spec),
+                status="failed",
+                attempt="1",
+                failure_class="infrastructure",
+                failure_stage="terminal_event",
+                error="process exited without terminal event",
+            )
+            runner._write_rows()
+            rows = runner.run(
+                suite_name="rerun-stale-fields",
+                suite_hash="x",
+                rerun_failed=True,
+            )
+            self.assertEqual(rows[0]["status"], "finished")
+            self.assertEqual(rows[0]["task_success"], "false")
+            self.assertEqual(rows[0]["outcome"], "task_failure")
+            self.assertEqual(rows[0]["failure_class"], "")
+
     def test_execute_task_success_comes_from_metrics(self):
         with tempfile.TemporaryDirectory() as directory:
             run_dir = Path(directory)
             (run_dir / "metrics.json").write_text(json.dumps({
-                "physical_grasp_success": False,
+                "physical_grasp_success": True,
                 "task_success": True,
                 "trial_success": True,
             }))
@@ -221,6 +303,32 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertFalse(status["task_success"])
             self.assertEqual(status["outcome"], "task_failure")
 
+    def test_execute_physical_failure_cannot_be_task_success(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "metrics.json").write_text(json.dumps({
+                "physical_grasp_success": False,
+                "task_success": True,
+                "trial_status": "finished",
+                "outcome": "success",
+            }))
+            with (run_dir / "events.csv").open("w", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(("schema_version", "sim_time_ns", "event", "method", "scenario", "seed", "details"))
+                writer.writerow((1, 1, "TRIAL_FINISHED", "gated", "static", 42, json.dumps({
+                    "execution_mode": "execute",
+                    "outcome": "success",
+                    "task_success": True,
+                })))
+            status = status_for_artifacts(
+                run_dir,
+                {"status": "finished", "trial_success": True, "task_success": True,
+                 "execution_mode": "execute"},
+            )
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(status["outcome"], "infrastructure_failure")
+            self.assertEqual(status["failure_stage"], "metrics")
+
     def test_execute_metrics_missing_is_infrastructure_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             status = status_for_artifacts(
@@ -231,6 +339,49 @@ class ExperimentRunnerTest(unittest.TestCase):
             self.assertEqual(status["status"], "failed")
             self.assertFalse(status["trial_success"])
             self.assertFalse(status["task_success"])
+
+    def test_execute_incomplete_metrics_is_infrastructure_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "metrics.json").write_text(json.dumps({
+                "physical_grasp_success": False,
+                "task_success": False,
+                "trial_status": "incomplete",
+            }))
+            status = status_for_artifacts(
+                run_dir,
+                {"status": "finished", "trial_success": True, "task_success": False,
+                 "execution_mode": "execute"},
+            )
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(status["outcome"], "infrastructure_failure")
+            self.assertEqual(status["failure_stage"], "metrics")
+
+    def test_execute_terminal_must_match_finalized_metrics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "metrics.json").write_text(json.dumps({
+                "physical_grasp_success": False,
+                "task_success": False,
+                "trial_status": "finished",
+                "outcome": "task_failure",
+            }))
+            with (run_dir / "events.csv").open("w", newline="") as stream:
+                writer = csv.writer(stream)
+                writer.writerow(("schema_version", "sim_time_ns", "event", "method", "scenario", "seed", "details"))
+                writer.writerow((1, 1, "TRIAL_FINISHED", "gated", "static", 42, json.dumps({
+                    "execution_mode": "execute",
+                    "outcome": "success",
+                    "task_success": True,
+                })))
+            status = status_for_artifacts(
+                run_dir,
+                {"status": "finished", "trial_success": True, "task_success": False,
+                 "execution_mode": "execute"},
+            )
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(status["outcome"], "infrastructure_failure")
+            self.assertEqual(status["failure_stage"], "events")
 
     def test_runner_waits_for_logger_flush_after_terminal_event(self):
         with tempfile.TemporaryDirectory() as directory:
