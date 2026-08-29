@@ -53,6 +53,13 @@ commitment. Each canonical trial selects one finished attempt for a method,
 scenario, and seed; infrastructure reruns retain their provenance without
 duplicating the denominator.
 
+Here, `gated` is the simulation target-commitment policy: it checks 3-D
+position spread, stability duration, minimum sample count, and observation
+freshness. It is not a one-factor implementation of the complete physical
+readiness gate, which also checks image centering, grasp-workspace/boundary
+validity, measured-command and measured-IK joint errors, and commanded joint
+rate.
+
 The campaigns use matched target trajectories and deterministic seeds. The
 runner records target, method, planning, execution, and physical lift/hold
 evidence for each trial. The final audit requires canonical `task_success=true`
