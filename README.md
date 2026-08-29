@@ -2,7 +2,7 @@
 
 ROS 2 research code for stability-gated closed-loop eye-in-hand tracking and grasping, combining semantic RGB-D perception, Piper manipulation, Gazebo/MoveIt simulation, and reproducible benchmark evaluation under target motion and perception disturbances.
 
-This repository accompanies an **IEEE EPIC 2026 short-paper submission**. It is research software, not a certified industrial safety controller. Test in plan-only mode first, keep the workspace clear, provide an emergency stop, and verify every motion on the actual robot before enabling actuation.
+This repository accompanies an **IEEE EPIC 2026 Extended Abstract submission**. It is research software, not a certified industrial safety controller. Test in plan-only mode first, keep the workspace clear, provide an emergency stop, and verify every motion on the actual robot before enabling actuation.
 
 Relevant video：https://youtube.com/shorts/YW5AcksZSoE?feature=share
 
