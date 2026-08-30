@@ -8,7 +8,8 @@ Relevant video：https://youtube.com/shorts/YW5AcksZSoE?feature=share
 
 ## Paper
 
-**Stability-Gated Closed-Loop Eye-in-Hand Tracking and Grasping of a Manually Moved Target**
+**Stability-Gated Closed-Loop Eye-in-Hand Tracking-to-Grasp
+for a Manually Moved Target**
 
 Zhang Yue and Xinlei Lin, IEEE EPIC 2026 short-paper submission.
 
