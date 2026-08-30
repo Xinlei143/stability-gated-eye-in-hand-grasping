@@ -4,7 +4,7 @@ ROS 2 research code for stability-gated closed-loop eye-in-hand tracking and gra
 
 This repository accompanies an **IEEE EPIC 2026 Extended Abstract submission**. It is research software, not a certified industrial safety controller. Test in plan-only mode first, keep the workspace clear, provide an emergency stop, and verify every motion on the actual robot before enabling actuation.
 
-Relevant video：https://youtube.com/shorts/YW5AcksZSoE?feature=share
+Physical demonstration video：https://youtube.com/shorts/YW5AcksZSoE?feature=share
 
 ## Paper
 
